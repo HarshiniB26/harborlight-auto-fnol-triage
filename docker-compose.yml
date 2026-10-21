@@ -1,0 +1,11 @@
+# Local workspace. The repo is mounted at /app; uv sync rebuilds .venv there.
+services:
+  app:
+    build: .
+    image: auto-fnol-participant
+    working_dir: /app
+    volumes:
+      - .:/app
+    # Recreate the venv on the mounted tree so host files do not hide it.
+    command: >
+      sh -c "uv sync --locked && sleep infinity"

@@ -1,0 +1,12 @@
+.venv
+.state
+.git
+__pycache__
+**/__pycache__
+*.sqlite
+submissions
+reports
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
