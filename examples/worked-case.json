@@ -1,0 +1,59 @@
+[
+  {
+    "case_id": "AUTO-D01",
+    "classification": "collision",
+    "routing": "standard",
+    "policy_ids": [
+      "AUTO-TRIAGE-01",
+      "AUTO-WORDING-V2"
+    ],
+    "facts": {
+      "policy_number": "PA-D01",
+      "incident_timestamp": "2026-10-01T12:00:00Z",
+      "vehicle_id": "VEH-D01",
+      "injury_reported": false,
+      "selected_policy_version": "2"
+    },
+    "missing_information": [],
+    "deadline": null,
+    "citations": [
+      {
+        "claim": "triage_and_potential_coverage",
+        "source_id": "AUTO-TRIAGE-01",
+        "quote": "Supported losses: collision, theft, glass. Other loss types classify as unsupported and route manual_review."
+      },
+      {
+        "claim": "triage_and_potential_coverage",
+        "source_id": "AUTO-WORDING-V2",
+        "quote": "Policy form: HPA-2026 version 2"
+      },
+      {
+        "claim": "incident_evidence",
+        "source_id": "AUTO-D01-INTAKE",
+        "quote": "The car struck a roadside post while turning. I need to report the incident and understand the next steps."
+      },
+      {
+        "claim": "incident_evidence",
+        "source_id": "AUTO-D01-ESTIMATE",
+        "quote": "Estimate reference: EST-D01"
+      },
+      {
+        "claim": "incident_evidence",
+        "source_id": "AUTO-D01-REPORT",
+        "quote": "Vehicle reference: VEH-D01"
+      },
+      {
+        "claim": "policy_or_claim_history",
+        "source_id": "AUTO-D01-POLICY",
+        "quote": "\"policies\": [{\"effective_from\": \"2026-01-01T00:00:00Z\", \"effective_to\": \"2026-09-01T00:00:00Z\", \"endorsements\": [], \"version\": \"1\", \"wording_source\": \"AUTO-WORDING-V1\"}, {\"effective_from\": \"2026-09-01T00:00:00Z\", \"effective_to\": \"2027-01-01T00:00:00Z\", \"endorsements\": [], \"version\": \"2\", \"wording_source\": \"AUTO-WORDING-V2\"}]"
+      },
+      {
+        "claim": "policy_or_claim_history",
+        "source_id": "AUTO-D01-CLAIMS",
+        "quote": "\"existing_claims\": []"
+      }
+    ],
+    "follow_up_questions": [],
+    "narrative": "Draft FNOL for human handler: collision incident at 2026-10-01T12:00:00Z. Recommended route: standard. Cited coverage wording is potentially relevant only. No coverage, liability, fraud, reserve, settlement, denial or payment decision is made. Draft only; human approval is required."
+  }
+]
