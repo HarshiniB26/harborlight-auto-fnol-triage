@@ -3,6 +3,14 @@ name = "fde-auto-fnol-training"
 version = "1.0.0"
 description = "Fictional Associate FDE capstone simulator and fixtures"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+    "pydantic>=2.14.1",
+]
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.0",
+    "ruff>=0.17.1",
+]
