@@ -1,0 +1,6 @@
+services:
+  app:
+    build: .
+    image: auto-fnol-participant
+    working_dir: /app
+    command: ["sh", "-c", "uv sync --locked && sleep infinity"]
