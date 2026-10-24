@@ -4,6 +4,17 @@ Participant package version 1.0.0. All institutions, people, policies, records, 
 
 Prepare a cited personal-auto first-notice-of-loss draft and routing recommendation for a licensed human claims handler.
 
+## Application
+
+The triage copilot lives in `harborlight/`. It does not call an LLM. Policy selection, routing, retries, and citations are deterministic. Read `docs/ARCHITECTURE.md`, `docs/RUNBOOK.md`, and `docs/LIMITATIONS.md`.
+
+```sh
+uv run --locked python -m harborlight draft --out submissions/results.json
+uv run --locked python -m harborlight serve
+```
+
+The enterprise mock must already be running on port 8767. `docker compose -f docker-compose.app.yml up --build` starts both.
+
 ## Start here
 
 Read `BRIEF.md`, `docs/POLICY_GUIDE.md`, `docs/API.md`, `docs/OUTPUT_CONTRACT.md`, and `docs/ASSESSMENT.md`.
