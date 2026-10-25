@@ -103,6 +103,8 @@ class EnterpriseClient:
                 tool=tool,
                 attempts=attempts["n"],
                 error=str(exc),
+                circuit_state=breaker.state,
+                failure_count=breaker.failure_count,
             )
             return ToolResult(False, 503, None, attempts["n"], str(exc))
         self.tracer.event(
@@ -111,6 +113,7 @@ class EnterpriseClient:
             tool=tool,
             attempts=attempts["n"],
             status=status,
+            circuit_state=breaker.state,
             source_id=(body or {}).get("source_id") if isinstance(body, dict) else None,
         )
         if status != 200:

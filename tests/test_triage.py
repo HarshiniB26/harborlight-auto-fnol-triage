@@ -1,10 +1,12 @@
 import unittest
 
+from harborlight.idempotency import creation_block, idempotency_key
 from harborlight.resilience import (
     CircuitBreaker,
     UpstreamUnavailable,
     call_with_retries,
 )
+from harborlight.slo import budget_action
 from harborlight.triage import route, select_policy
 
 POLICIES = [
@@ -50,6 +52,17 @@ class RetryTest(unittest.TestCase):
 
         with self.assertRaises(UpstreamUnavailable):
             call_with_retries(always, max_attempts=3, base_delay=0, breaker=CircuitBreaker(failure_threshold=99), sleep=lambda _s: None)
+
+    def test_idempotency_key_changes_with_draft(self):
+        first = idempotency_key("AUTO-D01", {"case_id": "AUTO-D01", "narrative": "a"})
+        replay = idempotency_key("AUTO-D01", {"case_id": "AUTO-D01", "narrative": "a"})
+        changed = idempotency_key("AUTO-D01", {"case_id": "AUTO-D01", "narrative": "b"})
+        self.assertEqual(first, replay)
+        self.assertNotEqual(first, changed)
+        self.assertEqual(budget_action(0.90), "page_human")
+        self.assertEqual(budget_action(0.97), "stop_risky_changes")
+        self.assertEqual(creation_block({"indicators": {"claims_service_ok": True, "duplicate_intake": True, "record_exists": False}}), "duplicate_loss")
+        self.assertIsNone(creation_block({"indicators": {"claims_service_ok": True, "duplicate_intake": False, "record_exists": False}}))
 
 
 if __name__ == "__main__":

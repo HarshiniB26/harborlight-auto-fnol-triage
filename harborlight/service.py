@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from harborlight.enterprise import EnterpriseClient
+from harborlight.idempotency import creation_block, idempotency_key
 from harborlight.observe import Tracer, render_prometheus, snapshot
 from harborlight.resilience import UpstreamUnavailable
 from harborlight.workflow import Workflow
@@ -105,9 +106,12 @@ def make_handler(app: App):
                 draft = app.drafts.get(case_id) if isinstance(case_id, str) else None
                 if not isinstance(review_id, str) or not draft:
                     return self._json(400, {"error": "draft_and_review_required"})
+                blocked = creation_block(draft)
+                if blocked:
+                    return self._json(409, {"error": blocked})
                 key = body.get("idempotency_key")
                 if not isinstance(key, str) or not key:
-                    key = "fnol-" + case_id
+                    key = idempotency_key(case_id, draft)
                 status, result = app.client.create_record(case_id, review_id, draft, key)
                 return self._json(status, result)
             return self._json(404, {"error": "not_found"})

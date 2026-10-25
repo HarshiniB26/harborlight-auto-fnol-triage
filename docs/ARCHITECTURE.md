@@ -17,7 +17,7 @@ The supplied procedure names the loss types, the policy-interval rule, the routi
 
 ## SLO
 
-Target for this exercise: 99% of draft requests that the enterprise mock can serve return a contract object within 2 seconds, measured on the local deployment. The remaining 1% is the error budget for tool outages and restarts. A claims or policy outage spends budget by routing that case to manual review after three attempts; it does not authorize a guessed policy or a second claim.
+Defined in `harborlight/slo.py`. 99% of draft requests finish within 2 seconds, including a fail-closed `manual_review` when claims or policy cannot be read. The error budget is the other 1%. A timeout that still returns a route inside 2 seconds has met the target. A hang, a crash, or a draft slower than 2 seconds spends budget. Below 99%, stop workflow changes. Below 95%, page a human. Counters: `drafts_within_slo_total`, `drafts_over_slo_total`, and `draft_success_within_slo_ratio`.
 
 ## What is intentionally not an agent
 

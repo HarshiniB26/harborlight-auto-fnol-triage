@@ -1,6 +1,7 @@
 """Case workflow: tools and documents in, contract draft out. No human approval."""
 
 import json
+import time
 from pathlib import Path
 
 from harborlight.enterprise import EnterpriseClient, ToolResult
@@ -16,6 +17,7 @@ from harborlight.evidence import (
 from harborlight.observe import Tracer, incr
 from harborlight.redact import redact_text
 from harborlight.resilience import UpstreamUnavailable
+from harborlight.slo import within_target
 from harborlight.triage import route, select_policy, wording_quote
 
 TRIAGE_ID = "AUTO-TRIAGE-01"
@@ -42,18 +44,27 @@ class Workflow:
 
     def draft_case(self, case: dict) -> dict:
         case_id = case["case_id"]
-        with self.tracer.span("draft_case", case_id=case_id):
-            documents = self._documents(case.get("documents") or [])
-            policy = self.client.read_tool(case_id, "policy")
-            claims = self.client.read_tool(case_id, "claims")
-            try:
-                existing = self.client.get_record(case_id)
-            except (UpstreamUnavailable, OSError, TimeoutError) as exc:
-                existing = None
-                self.tracer.event("record_lookup_failed", case_id=case_id, error=type(exc).__name__)
-            output = self._assemble(case_id, documents, policy, claims, existing)
-            incr("drafts_total")
-            return output
+        started = time.perf_counter()
+        try:
+            with self.tracer.span("draft_case", case_id=case_id):
+                documents = self._documents(case.get("documents") or [])
+                policy = self.client.read_tool(case_id, "policy")
+                claims = self.client.read_tool(case_id, "claims")
+                try:
+                    existing = self.client.get_record(case_id)
+                except (UpstreamUnavailable, OSError, TimeoutError) as exc:
+                    existing = None
+                    self.tracer.event("record_lookup_failed", case_id=case_id, error=type(exc).__name__)
+                output = self._assemble(case_id, documents, policy, claims, existing)
+        except (UpstreamUnavailable, OSError, TimeoutError, RuntimeError, ValueError, KeyError):
+            incr("drafts_failed")
+            raise
+        elapsed = (time.perf_counter() - started) * 1000
+        incr("drafts_total")
+        incr("latency_ms_sum", elapsed)
+        incr("latency_ms_count")
+        incr("drafts_within_slo_total" if within_target(elapsed) else "drafts_over_slo_total")
+        return output
 
     def _documents(self, source_ids: list[str]) -> list[dict]:
         loaded = []
@@ -223,6 +234,18 @@ class Workflow:
                 "record_exists": existing is not None,
             },
         }
+        self.tracer.event(
+            "route_decision",
+            case_id=case_id,
+            classification=classification,
+            routing=routing,
+            selected_policy_version=facts["selected_policy_version"],
+            missing_information=missing,
+            claims_ok=claims.ok,
+            claims_attempts=claims.attempts,
+            duplicate=duplicate,
+            untrusted_instructions_ignored=output["indicators"]["untrusted_instructions_ignored"],
+        )
         return json.loads(redact_text(json.dumps(output)))
 
 

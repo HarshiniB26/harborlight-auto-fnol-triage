@@ -19,6 +19,8 @@ _metrics = {
     "records_created_total": 0,
     "records_duplicate_total": 0,
     "injection_blocked_total": 0,
+    "drafts_within_slo_total": 0,
+    "drafts_over_slo_total": 0,
     "latency_ms_sum": 0.0,
     "latency_ms_count": 0,
 }
@@ -80,7 +82,9 @@ def snapshot() -> dict:
     with _lock:
         data = dict(_metrics)
     count = data.get("latency_ms_count") or 0
+    drafts = data.get("drafts_total") or 0
     data["latency_ms_avg"] = round(data["latency_ms_sum"] / count, 3) if count else 0
+    data["draft_success_within_slo_ratio"] = round(data["drafts_within_slo_total"] / drafts, 4) if drafts else 1
     return data
 
 
