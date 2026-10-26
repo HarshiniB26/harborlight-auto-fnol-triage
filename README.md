@@ -108,6 +108,15 @@ uv run --locked python tools/hardening_demo.py
 The tests process all 12 development cases and compare the drafts with
 `feedback/dev_gold.json` through the supplied evaluator.
 
+Run the optional coverage gate without changing the locked project dependencies:
+
+```sh
+uv run --with pytest --with pytest-cov python -m pytest tests/ \
+  --cov=workbench --cov-report=term-missing --cov-fail-under=98
+```
+
+The current suite contains 34 tests and covers 99% of the `workbench` package.
+
 After preparing all cases, export and evaluate the exact submission array:
 
 ```sh

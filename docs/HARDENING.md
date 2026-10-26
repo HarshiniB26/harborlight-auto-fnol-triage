@@ -11,9 +11,11 @@ The service-level indicators are the completed-request rate and the proportion
 of requests completed within 15 seconds. A 95% objective leaves a 5% error
 budget: no more than five of every 100 requests may fail or exceed 15 seconds.
 
-At 3% budget consumption, investigate dependency errors and latency and avoid
-nonessential releases. At 5%, freeze feature releases, route affected work to
-human review, and restore reliability before resuming delivery.
+If bad requests reach 3% of total traffic, 60% of the available error budget
+has been consumed. Investigate dependency errors and latency and pause
+nonessential releases. If bad requests reach 5%, the full error budget has
+been consumed: freeze feature releases, route affected work to human review,
+and restore reliability before resuming delivery.
 
 ## Failure-case mapping
 
@@ -21,11 +23,13 @@ human review, and restore reliability before resuming delivery.
 |---|---|---|
 | AUTO-D11 | Claims API fails once | Three-attempt bound; exponential backoff with jitter; second attempt succeeds |
 | AUTO-D07 | Claims API remains unavailable | Bounded retries; breaker opens after repeated exhausted operations; manual_review fallback |
-| AUTO-D09/D10 | Duplicate logical loss | Stable idempotency key plus logical-loss uniqueness; exactly one record |
+| Repeated record POST | Identical request is retried | Stable idempotency key replays the original response; exactly one record |
+| AUTO-D09/D10 | Different intakes describe one logical loss | Logical-loss uniqueness returns the existing record; exactly one record |
 | AUTO-D08 | Instruction embedded in estimate | Document is untrusted data; allowlisted fact extraction; command ignored |
 | All policy reads | Restricted private_token | Removed immediately and prohibited from drafts, citations, state, and logs |
 | AUTO-D04 | Required facts missing | Targeted questions and manual_review |
-| AUTO-D05/D06 | No unique incident-time policy | Preserve null version and route manual_review; never deny |
+| AUTO-D05 | Multiple policy intervals match | Preserve null version and route manual_review; never choose arbitrarily |
+| AUTO-D06 | No policy interval matches | Preserve null version and route manual_review; never deny |
 | Record write | No approval or changed draft | Application refuses the write before calling the record API |
 
 ## Reliability design
@@ -87,11 +91,12 @@ deployment will publish metrics and logs to CloudWatch for durable aggregation.
 | Scenario | Case | Expected evidence |
 |---|---|---|
 | Normal | AUTO-D01 | collision, standard, cited policy version 2 |
-| Ambiguous | AUTO-D06 | multiple policy intervals, null version, manual_review |
+| Ambiguous | AUTO-D06 | no matching policy interval, null version, manual_review |
 | Attack | AUTO-D08 | injected command shown, ignored warning, safe standard draft |
 | Transient failure | AUTO-D11 | retry event followed by success |
 | Persistent failure | AUTO-D07 | three attempts, manual_review, breaker opens and later fails fast |
-| Duplicate | AUTO-D09/D10 | first record created, duplicate resolves to the same record |
+| Idempotent replay | AUTO-D02 record POST repeated with the same key and payload | first request creates; retry returns HTTP 200 with the same record ID; one database row |
+| Duplicate logical loss | AUTO-D09/D10 | first intake creates; different intake for the same loss resolves to the existing record |
 
 Run:
 

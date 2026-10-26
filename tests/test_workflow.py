@@ -86,6 +86,37 @@ class WorkflowTests(unittest.TestCase):
         with sqlite3.connect(self.mock_path) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM records").fetchone()[0], 1)
 
+    def test_identical_record_request_replays_with_same_idempotency_key(self):
+        """A transport retry returns the first response and creates no second row."""
+
+        case_id = "AUTO-D02"
+        self.workbench.process(case_id)
+        review = self.workbench.submit_review(case_id)
+        self._approve(review["review_id"])
+
+        first = self.workbench.file_record(case_id)
+        self.assertEqual(first["status"], "created")
+
+        state = self.workbench._read()[case_id]
+        status, replay = self.workbench.client.create_record(
+            case_id,
+            review["review_id"],
+            state["draft"],
+            state["idempotency_key"],
+            trace_id="tr_idempotency_replay",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(replay["record_id"], first["record"]["record_id"])
+        with sqlite3.connect(self.mock_path) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM records").fetchone()[0], 1)
+            self.assertEqual(
+                db.execute(
+                    "SELECT COUNT(*) FROM audit WHERE event='write_replayed'"
+                ).fetchone()[0],
+                1,
+            )
+
     def _approve(self, review_id):
         """The test acts as the human operator. The workbench has no approve method."""
         with sqlite3.connect(self.mock_path) as db:
