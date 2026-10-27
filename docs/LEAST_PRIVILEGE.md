@@ -2,17 +2,20 @@
 
 | Component | Required access | Explicitly excluded |
 |---|---|---|
-| Browser UI | Workbench `/api` only | Runtime, state database, approval CLI |
-| Workbench server | List/read cases; submit review; create exact approved record | Human approve/reject, claim updates, adjudication, arbitrary files |
+| Browser UI | Workbench `/api` only, including an explicit human review action | Runtime, state database, approval CLI |
+| Workbench server | List/read cases; submit named human decision; create exact approved record | Autonomous approval, claim updates, adjudication, arbitrary files |
 | Deterministic rules | Already-retrieved evidence values | Network, filesystem, database, tools |
-| Human operator CLI | List and approve/reject pending reviews | Draft generation and autonomous record creation |
+| Human operator CLI | Administrative fallback to list and decide pending reviews | Draft generation and autonomous record creation |
 | Supplied runtime | Supplied fixture and mock state | Public internet and unrelated systems |
 
-The workbench has no approval method. Before record creation it checks that a
-review is approved, belongs to the case, contains a readable draft, has the
-expected hash, and exactly equals the current draft. A changed or unapproved
-draft is rejected before the record endpoint is called. The record call uses a
-stable idempotency key and cannot update an existing claim.
+The workbench exposes a review-decision method only for an explicit UI request;
+case processing never calls it. It accepts a named person, a pending review,
+and `approved` or `rejected`, after confirming the pending hash matches the
+current draft. Before record creation it again checks that the review belongs
+to the case, contains a readable draft, has the expected hash, and exactly
+equals the current draft. A changed or unapproved draft is rejected before the
+record endpoint is called. The record call uses a stable idempotency key and
+cannot update an existing claim.
 
 The rules never make coverage, liability, fraud, reserve, settlement, denial,
 payment, or customer-commitment decisions. A repair discrepancy is only a

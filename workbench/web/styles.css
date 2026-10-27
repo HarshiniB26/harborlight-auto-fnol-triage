@@ -61,7 +61,24 @@ h2 { margin: 0 0 8px; font-size: 32px; }
   cursor: pointer;
 }
 .action.secondary { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+.action.danger { background: #7a2d24; }
 .action:disabled { opacity: 0.45; cursor: not-allowed; }
+.review-box {
+  margin: 18px 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+.review-box h3 { margin-top: 0; }
+.review-box label { display: block; margin: 12px 0 5px; color: var(--muted); }
+.review-box input {
+  width: min(100%, 420px);
+  padding: 9px 10px;
+  border: 1px solid #a9a091;
+  background: white;
+  color: var(--ink);
+  font: inherit;
+}
 dl { display: grid; grid-template-columns: 180px 1fr; gap: 6px 12px; margin: 0; }
 dt { color: var(--muted); }
 dd { margin: 0; }

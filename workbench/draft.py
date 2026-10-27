@@ -100,8 +100,11 @@ def _cite_document(citations, source_id, assertions, text, sources):
     _add_citation(citations, "Supporting incident evidence.", source_id, fallback, sources)
 
 
-def build_draft(case, documents, policy, claims, data_dir):
+def build_draft(case, documents, policy, claims, data_dir=None, *, policy_loader=None):
     """Create one output-contract draft and its safe processing warnings."""
+
+    if policy_loader is None:
+        policy_loader = lambda source_id: _load_policy(data_dir, source_id)
 
     sources = dict(documents)
     assertions, suspicious_sources = extract_assertions(documents)
@@ -160,7 +163,7 @@ def build_draft(case, documents, policy, claims, data_dir):
         )
 
     policy_ids = []
-    procedure = _load_policy(data_dir, PROCEDURE_ID)
+    procedure = policy_loader(PROCEDURE_ID)
     if procedure:
         sources[PROCEDURE_ID] = procedure
         policy_ids.append(PROCEDURE_ID)
@@ -182,7 +185,7 @@ def build_draft(case, documents, policy, claims, data_dir):
         for source_id in policy_sources:
             if not source_id or source_id in policy_ids:
                 continue
-            text = _load_policy(data_dir, source_id)
+            text = policy_loader(source_id)
             if not text:
                 evidence_issues.append(
                     "Selected policy wording or an endorsement is unavailable."

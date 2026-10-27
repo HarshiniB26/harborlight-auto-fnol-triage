@@ -52,8 +52,18 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(prepared["draft"]["classification"], "collision")
         blocked = self._json("POST", "/api/cases/AUTO-D01/record")
         self.assertEqual(blocked["error"], "approval_required")
+        pending = self._json("POST", "/api/cases/AUTO-D01/review")
+        self.assertEqual(pending["status"], "pending")
+        approved = self._json(
+            "POST",
+            "/api/cases/AUTO-D01/decision",
+            {"reviewer": "Taylor Handler", "decision": "approved"},
+        )
+        self.assertEqual(approved["status"], "approved")
+        self.assertEqual(approved["reviewer"], "Taylor Handler")
         case = self._json("GET", "/api/cases/AUTO-D01")
         self.assertEqual(case["activity"][0]["label"], "Draft prepared")
+        self.assertEqual(case["review"]["reviewer"], "Taylor Handler")
         incomplete = self._json("GET", "/api/results")
         self.assertEqual(incomplete["error"], "drafts_incomplete")
 
@@ -80,8 +90,9 @@ class HttpTests(unittest.TestCase):
             self.assertEqual(response.headers["X-Trace-ID"], "tr_http_test")
         self.assertEqual(body["trace_id"], "tr_http_test")
 
-    def _json(self, method, path):
-        request = Request(self.base + path, data=b"{}" if method == "POST" else None, method=method,
+    def _json(self, method, path, body=None):
+        data = json.dumps(body or {}).encode() if method == "POST" else None
+        request = Request(self.base + path, data=data, method=method,
                           headers={"Content-Type": "application/json", "Accept": "application/json"})
         try:
             with urlopen(request, timeout=5) as response:

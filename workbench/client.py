@@ -107,6 +107,20 @@ class MockClient:
             trace_id=trace_id,
         )
 
+    def decide_review(self, review_id, case_id, reviewer, decision, trace_id=None):
+        """Send an explicit human approve/reject decision for one review."""
+
+        return self._request(
+            "POST",
+            f"/v1/reviews/{quote(review_id, safe='')}/decision",
+            {
+                "case_id": case_id,
+                "reviewer": reviewer,
+                "decision": decision,
+            },
+            trace_id=trace_id,
+        )
+
     def create_record(self, case_id, review_id, draft, idempotency_key, trace_id=None):
         """Request one idempotent record from an exact approved draft."""
 

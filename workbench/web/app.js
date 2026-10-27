@@ -13,11 +13,11 @@ const labels = {
   record_created: "Record created",
 };
 
-async function api(path, method = "GET") {
+async function api(path, method = "GET", payload = null) {
   const response = await fetch(path, {
     method,
     headers: { Accept: "application/json", "Content-Type": "application/json" },
-    body: method === "POST" ? "{}" : undefined,
+    body: method === "POST" ? JSON.stringify(payload || {}) : undefined,
   });
   const body = await response.json();
   if (!response.ok && !body.error) throw new Error("Request failed");
@@ -53,9 +53,6 @@ function render(item) {
   const draft = item.draft;
   const review = item.review;
   const facts = draft ? draft.facts : null;
-  const command = review
-    ? `uv run --locked python tools/runtime.py approve ${review.review_id} --reviewer reviewer-name`
-    : "";
   panel.innerHTML = `
     <p class="meta">Auto FNOL</p>
     <h2>${esc(item.case_id)}</h2>
@@ -89,7 +86,16 @@ function render(item) {
       </article>`).join("")}
     ` : `<p class="empty">Prepare a draft to see the facts, route, and quotes.</p>`}
     ${review ? `<h3>Review ${esc(review.review_id)}</h3><p>Status: ${esc(review.status)}${review.reviewer ? ` · ${esc(review.reviewer)}` : ""}</p>` : ""}
-    ${item.status === "pending" ? `<p>A person approves this exact draft in another terminal. The workbench cannot approve it.</p><pre>${esc(command)}</pre>` : ""}
+    ${item.status === "pending" ? `<section class="review-box" aria-labelledby="review-heading">
+      <h3 id="review-heading">Human decision</h3>
+      <p class="help">Review the exact draft and citations above. Enter your name to create an auditable human decision.</p>
+      <label for="reviewer-name">Reviewer name</label>
+      <input id="reviewer-name" name="reviewer" maxlength="80" autocomplete="name" placeholder="Your full name">
+      <div class="row">
+        <button class="action" id="approve-review">Approve exact draft</button>
+        <button class="action danger" id="reject-review">Reject draft</button>
+      </div>
+    </section>` : ""}
     ${item.record ? `<p class="banner">Live system status: record ${esc(item.record.record_id)} is on file for this loss.</p>` : ""}
     ${(item.activity || []).length ? `<h3>Case activity</h3><ol class="activity">${item.activity.map((event) => `
       <li><strong>${esc(event.label)}</strong>
@@ -104,6 +110,18 @@ function render(item) {
   panel.querySelector("#submit").addEventListener("click", () => act(`/api/cases/${item.case_id}/review`));
   panel.querySelector("#file").addEventListener("click", () => act(`/api/cases/${item.case_id}/record`));
   panel.querySelector("#refresh").addEventListener("click", () => openCase(item.case_id));
+  if (item.status === "pending") {
+    const decide = (decision) => {
+      const reviewer = panel.querySelector("#reviewer-name").value.trim();
+      if (!reviewer) {
+        panel.querySelector("#message").textContent = "Enter your name before deciding.";
+        return;
+      }
+      act(`/api/cases/${encodeURIComponent(item.case_id)}/decision`, { reviewer, decision });
+    };
+    panel.querySelector("#approve-review").addEventListener("click", () => decide("approved"));
+    panel.querySelector("#reject-review").addEventListener("click", () => decide("rejected"));
+  }
 }
 
 async function exportResults() {
@@ -127,8 +145,8 @@ exportButton.addEventListener("click", () => {
   exportResults().catch((error) => { exportMessage.textContent = error.message; });
 });
 
-async function act(path) {
-  const result = await api(path, "POST");
+async function act(path, payload = null) {
+  const result = await api(path, "POST", payload);
   const message = panel.querySelector("#message");
   if (result.error) message.textContent = result.message || result.error;
   await openCase(selected);

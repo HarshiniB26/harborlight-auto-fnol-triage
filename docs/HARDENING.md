@@ -55,7 +55,9 @@ stable idempotency key and the runtime stores the prior response.
 - `private_token` is recursively removed immediately after a policy tool read.
 - Safe logging records metadata and outcomes, never tool payloads or documents.
 - An exact draft hash binds a human approval to the only draft that may be filed.
-- The application exposes no approval operation.
+- Processing exposes no autonomous approval path. A decision is accepted only
+  after a person explicitly reviews the pending draft in the private UI, enters
+  their name, and approves or rejects that exact draft hash.
 - `python tools/check_secrets.py` scans for likely live credentials.
 
 ## Observability

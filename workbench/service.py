@@ -12,6 +12,7 @@ from .client import MockClient
 from .draft import build_draft
 from .observability import Observability
 from .reliability import ReliableCaller
+from .storage import JsonStateStore, LocalEvidenceStore
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 
@@ -60,10 +61,14 @@ class Workbench:
         observability=None,
         reliable_caller=None,
         monotonic=None,
+        evidence_store=None,
+        state_store=None,
     ):
         self.client = MockClient(api_url)
         self.data_dir = Path(data_dir)
         self.state_path = Path(state_path)
+        self.evidence_store = evidence_store or LocalEvidenceStore(self.data_dir)
+        self.state_store = state_store or JsonStateStore(self.state_path)
         self._lock = threading.Lock()
         self.observability = observability or Observability()
         self.reliable_caller = reliable_caller or ReliableCaller(self.observability)
@@ -183,7 +188,13 @@ class Workbench:
                     policy_available=isinstance(policy, dict),
                     claims_available=isinstance(claims, dict),
                 )
-                draft, warnings = build_draft(case, documents, policy, claims, self.data_dir)
+                draft, warnings = build_draft(
+                    case,
+                    documents,
+                    policy,
+                    claims,
+                    policy_loader=self.evidence_store.policy,
+                )
                 if warnings:
                     self.observability.event(
                         "untrusted_document_instruction_ignored",
@@ -275,6 +286,64 @@ class Workbench:
             )
             payload["trace_id"] = trace_id
             return payload
+
+    def decide_review(self, case_id, reviewer, decision, trace_id=None):
+        """Record an explicit person's decision on the exact pending draft.
+
+        This method is reachable only from a deliberate UI/API action. No
+        processing or routing path calls it automatically.
+        """
+
+        trace_id = trace_id or "tr_" + uuid.uuid4().hex[:16]
+        self._check_id(case_id)
+        if decision not in {"approved", "rejected"}:
+            return {"error": "invalid_decision", "message": "Choose approve or reject."}
+        if (
+            not isinstance(reviewer, str)
+            or not reviewer.strip()
+            or len(reviewer.strip()) > 80
+            or any(ord(character) < 32 for character in reviewer)
+        ):
+            return {
+                "error": "reviewer_required",
+                "message": "Enter the reviewer's name (1–80 characters).",
+            }
+        self._find(case_id, trace_id)
+        with self._lock:
+            entry = self._read().get(case_id) or {}
+            draft = entry.get("draft")
+            review = self._live_review(entry, trace_id)
+            if not draft or not review:
+                return {"error": "review_required", "message": "Submit this draft for review first."}
+            if review.get("status") != "pending":
+                return {"error": "review_already_decided", "message": "This review is no longer pending."}
+            review_hash = review.get("hash") or review.get("draft_hash")
+            if review_hash != digest(draft):
+                return {"error": "draft_changed", "message": "The pending review does not match the current draft."}
+            status, payload = self.client.decide_review(
+                review.get("id") or review.get("review_id"),
+                case_id,
+                reviewer.strip(),
+                decision,
+                trace_id,
+            )
+        if status != 200 or not isinstance(payload, dict):
+            return {
+                "error": payload.get("error", "review_decision_failed")
+                if isinstance(payload, dict)
+                else "review_decision_failed",
+                "message": "The review decision was not saved.",
+            }
+        self.observability.event(
+            "human_review_decided",
+            trace_id=trace_id,
+            case_id=case_id,
+            review_id=payload.get("review_id"),
+            reviewer=reviewer.strip(),
+            decision=decision,
+        )
+        payload["trace_id"] = trace_id
+        return payload
 
     def file_record(self, case_id, trace_id=None):
         """File only the exact human-approved draft using a stable request key."""
@@ -394,9 +463,9 @@ class Workbench:
         loaded = {}
         for source_id in source_ids:
             self._check_id(source_id)
-            path = self.data_dir / "documents" / f"{source_id}.md"
-            if path.is_file():
-                loaded[source_id] = path.read_text()
+            text = self.evidence_store.document(source_id)
+            if text is not None:
+                loaded[source_id] = text
         return loaded
 
     def _find(self, case_id, trace_id=None):
@@ -459,26 +528,12 @@ class Workbench:
         obsolete shape is ignored and disappears the next time state is saved.
         """
 
-        if not self.state_path.is_file():
-            return {}
-        stored = json.loads(self.state_path.read_text())
-        if not isinstance(stored, dict):
-            return {}
-        return {
-            case_id: entry
-            for case_id, entry in stored.items()
-            if case_id != "cases"
-            and isinstance(entry, dict)
-            and isinstance(entry.get("draft"), dict)
-        }
+        return self.state_store.read()
 
     def _write(self, state):
         """Atomically persist generated drafts, review IDs, and request keys."""
 
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
-        temporary.write_text(json.dumps(state, indent=2))
-        temporary.replace(self.state_path)
+        self.state_store.write(state)
 
     @staticmethod
     def _check_id(value):

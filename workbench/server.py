@@ -1,12 +1,14 @@
 """Loopback workbench server and the handler page."""
 import argparse
 import json
+import os
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from .service import Workbench
+from .storage import PostgresStateStore, S3EvidenceStore, database_url_from_environment
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = Path(__file__).resolve().parent / "web"
@@ -70,16 +72,32 @@ def create_server(workbench, host="127.0.0.1", port=8080):
                 return self._json(400, {"error": "invalid_content_length", "message": "Content-Length must be an integer."})
             if size > 262144:
                 return self._json(413, {"error": "body_too_large", "message": "Request exceeds 256 KiB."})
+            body = {}
             if size:
-                self.rfile.read(size)
+                try:
+                    body = json.loads(self.rfile.read(size))
+                    if not isinstance(body, dict):
+                        raise ValueError()
+                except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                    return self._json(400, {
+                        "error": "invalid_json_object",
+                        "message": "Request body must be a JSON object.",
+                    })
             parts = path.strip("/").split("/")
-            if len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] in {"process", "review", "record"}:
+            if len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] in {"process", "review", "decision", "record"}:
                 case_id, action = parts[2], parts[3]
                 try:
                     if action == "process":
                         result = workbench.process(case_id, self.trace_id)
                     elif action == "review":
                         result = workbench.submit_review(case_id, self.trace_id)
+                    elif action == "decision":
+                        result = workbench.decide_review(
+                            case_id,
+                            body.get("reviewer"),
+                            body.get("decision"),
+                            self.trace_id,
+                        )
                     else:
                         result = workbench.file_record(case_id, self.trace_id)
                 except KeyError:
@@ -129,13 +147,26 @@ def main():
     """Run the local handler workbench on loopback by default."""
 
     parser = argparse.ArgumentParser(description="Harborlight local FNOL workbench")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--api", default="http://127.0.0.1:8767")
+    parser.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "8080")))
+    parser.add_argument("--api", default=os.getenv("RUNTIME_API_URL", "http://127.0.0.1:8767"))
     parser.add_argument("--data", type=Path, default=ROOT / "data" / "dev")
     parser.add_argument("--state", type=Path, default=ROOT / ".state" / "workbench.json")
+    parser.add_argument(
+        "--storage",
+        choices=("local", "aws"),
+        default=os.getenv("STORAGE_BACKEND", "local"),
+    )
+    parser.add_argument("--database-url", default=os.getenv("DATABASE_URL"))
+    parser.add_argument("--s3-bucket", default=os.getenv("EVIDENCE_BUCKET"))
+    parser.add_argument("--s3-prefix", default=os.getenv("EVIDENCE_PREFIX", ""))
     args = parser.parse_args()
-    workbench = Workbench(args.api, args.data, args.state)
+    options = {}
+    if args.storage == "aws":
+        database_url = args.database_url or database_url_from_environment()
+        options["state_store"] = PostgresStateStore(database_url)
+        options["evidence_store"] = S3EvidenceStore(args.s3_bucket, args.s3_prefix)
+    workbench = Workbench(args.api, args.data, args.state, **options)
     server = create_server(workbench, args.host, args.port)
     workbench.observability.event(
         "server_started", host=args.host, port=args.port, service="fnol-workbench"

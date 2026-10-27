@@ -3,6 +3,9 @@ name = "fde-auto-fnol-training"
 version = "1.0.0"
 description = "Fictional Associate FDE capstone simulator and fixtures"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+  "boto3>=1.35,<2",
+  "psycopg[binary]>=3.2,<4",
+]
 [tool.uv]
 package = false

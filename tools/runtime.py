@@ -116,6 +116,35 @@ def create_server(data_dir, state, host="127.0.0.1", port=8765):
             cid = body.get("case_id")
             if not isinstance(cid, str) or cid not in case_map:
                 return self.reply(400, {"error": "unknown_case"})
+            parts = self.path.strip("/").split("/")
+            if len(parts) == 4 and parts[:2] == ["v1", "reviews"] and parts[3] == "decision":
+                reviewer = body.get("reviewer")
+                decision = body.get("decision")
+                if (decision not in {"approved", "rejected"}
+                        or not isinstance(reviewer, str) or not reviewer.strip()
+                        or len(reviewer.strip()) > 80):
+                    return self.reply(400, {"error": "reviewer_and_decision_required"})
+                rid = parts[2]
+                with connect(state) as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    row = db.execute("SELECT * FROM reviews WHERE id=?", (rid,)).fetchone()
+                    if not row:
+                        return self.reply(404, {"error": "review_not_found"})
+                    if row["case_id"] != cid:
+                        return self.reply(409, {"error": "review_case_mismatch"})
+                    if row["status"] != "pending":
+                        return self.reply(409, {"error": "review_already_decided"})
+                    reviewer = reviewer.strip()
+                    db.execute(
+                        "UPDATE reviews SET status=?,reviewer=? WHERE id=?",
+                        (decision, reviewer, rid),
+                    )
+                    audit(db, "human_" + decision, cid, review_id=rid,
+                          reviewer=reviewer, draft_hash=row["hash"],
+                          channel="workbench_ui")
+                return self.reply(200, {"review_id": rid, "case_id": cid,
+                    "status": decision, "reviewer": reviewer,
+                    "draft_hash": row["hash"]})
             if self.path == "/v1/reviews":
                 draft = body.get("draft")
                 if not isinstance(draft, dict) or draft.get("case_id") != cid:

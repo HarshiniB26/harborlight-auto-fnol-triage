@@ -73,6 +73,26 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(attempted, 0)
         self.assertEqual(records, 0)
 
+    def test_named_human_can_decide_the_exact_pending_draft(self):
+        self.workbench.process("AUTO-D01")
+        pending = self.workbench.submit_review("AUTO-D01")
+        missing_name = self.workbench.decide_review("AUTO-D01", "", "approved")
+        self.assertEqual(missing_name["error"], "reviewer_required")
+
+        approved = self.workbench.decide_review(
+            "AUTO-D01", "Taylor Handler", "approved", trace_id="tr_human_decision"
+        )
+        self.assertEqual(approved["review_id"], pending["review_id"])
+        self.assertEqual(approved["status"], "approved")
+        self.assertEqual(approved["reviewer"], "Taylor Handler")
+        created = self.workbench.file_record("AUTO-D01")
+        self.assertEqual(created["status"], "created")
+        with sqlite3.connect(self.mock_path) as db:
+            audit = db.execute(
+                "SELECT detail FROM audit WHERE event='human_approved'"
+            ).fetchone()[0]
+        self.assertIn('"channel":"workbench_ui"', audit)
+
     def test_approved_draft_files_once_and_duplicate_intake_reuses_it(self):
         for case_id in ("AUTO-D09", "AUTO-D10"):
             self.workbench.process(case_id)
@@ -118,7 +138,7 @@ class WorkflowTests(unittest.TestCase):
             )
 
     def _approve(self, review_id):
-        """The test acts as the human operator. The workbench has no approve method."""
+        """Use the operator-style database fixture for duplicate/idempotency tests."""
         with sqlite3.connect(self.mock_path) as db:
             db.execute(
                 "UPDATE reviews SET status='approved', reviewer='reviewer-name' WHERE id=? AND status='pending'",
