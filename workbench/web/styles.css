@@ -86,6 +86,28 @@ pre {
   padding: 12px;
   font-size: 14px;
 }
+#login:not([hidden]) {
+  grid-column: 1 / -1;
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+#login form {
+  width: min(420px, 100%);
+  padding: 28px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+#login label { display: block; margin: 12px 0; }
+#login input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px;
+  font: inherit;
+}
+#login-message { margin-top: 12px; }
 @media (max-width: 800px) {
   body { grid-template-columns: 1fr; }
   aside { border-right: 0; border-bottom: 1px solid var(--line); }

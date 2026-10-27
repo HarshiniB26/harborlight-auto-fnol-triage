@@ -1,0 +1,26 @@
+# Production process on the EC2 host. Nginx stays on the host and proxies to
+# 127.0.0.1:8080. The runtime port is not published.
+services:
+  fnol:
+    build:
+      context: .
+      target: runtime
+    image: fnol-runtime
+    restart: unless-stopped
+    env_file:
+      - /opt/fnol/app.env
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: ${FNOL_LOG_GROUP}
+        awslogs-stream: application
+        awslogs-create-group: "false"

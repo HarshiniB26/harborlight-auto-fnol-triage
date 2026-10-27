@@ -1,6 +1,7 @@
 """Orchestrate case processing, human review, and approved-record filing."""
 import hashlib
 import json
+import os
 import re
 import threading
 import time
@@ -60,10 +61,15 @@ class Workbench:
         observability=None,
         reliable_caller=None,
         monotonic=None,
+        database_url=None,
     ):
         self.client = MockClient(api_url)
         self.data_dir = Path(data_dir)
         self.state_path = Path(state_path)
+        if database_url is None:
+            self._database_url = _configured_database_url()
+        else:
+            self._database_url = database_url or None
         self._lock = threading.Lock()
         self.observability = observability or Observability()
         self.reliable_caller = reliable_caller or ReliableCaller(self.observability)
@@ -201,6 +207,11 @@ class Workbench:
                     missing_count=len(draft["missing_information"]),
                     citation_count=len(draft["citations"]),
                 )
+                warnings = _with_optional_model_note(warnings, {
+                    "case_id": case_id,
+                    "classification": draft["classification"],
+                    "routing": draft["routing"],
+                })
                 state[case_id] = {
                     "draft": draft,
                     "warnings": warnings,
@@ -459,9 +470,7 @@ class Workbench:
         obsolete shape is ignored and disappears the next time state is saved.
         """
 
-        if not self.state_path.is_file():
-            return {}
-        stored = json.loads(self.state_path.read_text())
+        stored = self._load_state()
         if not isinstance(stored, dict):
             return {}
         return {
@@ -472,9 +481,23 @@ class Workbench:
             and isinstance(entry.get("draft"), dict)
         }
 
+    def _load_state(self):
+        if self._database_url:
+            from tools.workbench_state import read_document
+
+            return read_document(self._database_url)
+        if not self.state_path.is_file():
+            return {}
+        return json.loads(self.state_path.read_text())
+
     def _write(self, state):
         """Atomically persist generated drafts, review IDs, and request keys."""
 
+        if self._database_url:
+            from tools.workbench_state import write_document
+
+            write_document(self._database_url, state)
+            return
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
         temporary.write_text(json.dumps(state, indent=2))
@@ -486,6 +509,31 @@ class Workbench:
 
         if not isinstance(value, str) or not SAFE_ID.fullmatch(value):
             raise KeyError(value)
+
+
+def _configured_database_url():
+    if not (
+        os.environ.get("FNOL_DATABASE_URL", "").strip()
+        or os.environ.get("FNOL_DATABASE_SECRET_ARN", "").strip()
+        or os.environ.get("FNOL_APP_SECRET_ARN", "").strip()
+    ):
+        return None
+    from tools.aws_config import application_database_url
+
+    return application_database_url()
+
+
+def _with_optional_model_note(warnings, summary):
+    """Attach a Bedrock warning only when that integration is enabled."""
+
+    if os.environ.get("FNOL_BEDROCK_ENABLED", "").strip().lower() not in {"1", "true", "yes"}:
+        return warnings
+    from .bedrock import advisory_annotation
+
+    note = advisory_annotation(summary)
+    if not note:
+        return warnings
+    return [*warnings, note]
 
 
 def _public_review(review):

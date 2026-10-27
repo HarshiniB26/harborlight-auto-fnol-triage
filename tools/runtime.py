@@ -1,53 +1,32 @@
-"""Local fictional enterprise simulator. Python 3.12+, standard library only."""
+"""Local fictional enterprise simulator. Python 3.12+.
+
+SQLite remains the default state store. PostgreSQL and S3 are used only when
+their environment settings are present. The workbench still cannot approve a
+review; approval stays on this command-line interface.
+"""
+
 import argparse
 import hashlib
 import json
-import sqlite3
 import sys
 import uuid
-from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from tools.dataset_loader import DatasetCache, DatasetError, DatasetInvalid, DatasetNotFound
+from tools.state_store import canonical, open_store
+
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def canonical(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def digest(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
-def connect(path):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(path, timeout=15)
-    db.row_factory = sqlite3.Row
-    db.executescript('''
-      CREATE TABLE IF NOT EXISTS reviews(id TEXT PRIMARY KEY, case_id TEXT,
-        draft TEXT, hash TEXT, status TEXT, reviewer TEXT);
-      CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY, case_id TEXT UNIQUE,
-        draft TEXT, review_id TEXT);
-      CREATE TABLE IF NOT EXISTS keys(key TEXT PRIMARY KEY, hash TEXT, response TEXT);
-      CREATE TABLE IF NOT EXISTS calls(case_id TEXT, tool TEXT, n INTEGER,
-        PRIMARY KEY(case_id, tool));
-      CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT,
-        at TEXT, event TEXT, case_id TEXT, detail TEXT);
-    ''')
-    return db
-
-
-def audit(db, event, case_id="", **detail):
-    db.execute("INSERT INTO audit(at,event,case_id,detail) VALUES(?,?,?,?)",
-               (datetime.now(timezone.utc).isoformat(), event, case_id, canonical(detail)))
-
-
-def create_server(data_dir, state, host="127.0.0.1", port=8765):
-    dataset = json.loads((Path(data_dir) / "dataset.json").read_text())
-    case_map = {x["case_id"]: x for x in dataset["cases"]}
-    connect(state).close()
+def create_server(data_dir, state, host="127.0.0.1", port=8765, *, dataset_cache=None, store=None):
+    cache = dataset_cache or DatasetCache.from_env(data_dir)
+    cache.get()
+    store = store or open_store(state)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -61,49 +40,64 @@ def create_server(data_dir, state, host="127.0.0.1", port=8765):
             self.end_headers()
             self.wfile.write(raw)
 
+        def _dataset(self):
+            return cache.get().dataset
+
         def do_GET(self):
             from urllib.parse import urlsplit
+
             path = urlsplit(self.path).path
+            loaded = cache.get()
+            dataset = loaded.dataset
+            case_map = {item["case_id"]: item for item in dataset["cases"]}
             if path == "/health":
-                return self.reply(200, {"status": "ok", "dataset": dataset["name"],
-                                        "fictional_training_only": True})
+                return self.reply(200, {
+                    "status": "ok",
+                    "dataset": dataset["name"],
+                    "dataset_version": loaded.version,
+                    "fictional_training_only": True,
+                })
             if path == "/v1/cases":
-                return self.reply(200, {"cases": [{"case_id": x["case_id"],
-                    "intake_source": x["intake_source"], "documents": x["documents"]}
-                    for x in dataset["cases"]]})
+                return self.reply(200, {"cases": [
+                    {
+                        "case_id": item["case_id"],
+                        "intake_source": item["intake_source"],
+                        "documents": item["documents"],
+                    }
+                    for item in dataset["cases"]
+                ]})
             parts = path.strip("/").split("/")
             if len(parts) == 3 and parts[:2] == ["v1", "reviews"]:
-                with connect(state) as db:
-                    row = db.execute("SELECT * FROM reviews WHERE id=?", (parts[2],)).fetchone()
-                return self.reply(200, dict(row)) if row else self.reply(404, {"error": "not_found"})
+                row = store.get_review(parts[2])
+                return self.reply(200, row) if row else self.reply(404, {"error": "not_found"})
             if len(parts) == 3 and parts[:2] == ["v1", "records"]:
                 case = case_map.get(parts[2])
                 if not case:
                     return self.reply(404, {"error": "not_found"})
-                with connect(state) as db:
-                    row = db.execute("SELECT * FROM records WHERE id=?", (case["logical_key"],)).fetchone()
-                return self.reply(200, dict(row)) if row else self.reply(404, {"error": "not_found"})
+                row = store.get_record(case["logical_key"])
+                return self.reply(200, row) if row else self.reply(404, {"error": "not_found"})
             if len(parts) != 4 or parts[:2] != ["v1", "cases"]:
                 return self.reply(404, {"error": "not_found"})
-            cid, tool = parts[2:]
-            case = case_map.get(cid)
+            case_id, tool = parts[2:]
+            case = case_map.get(case_id)
             if not case or tool not in case["tools"]:
                 return self.reply(404, {"error": "not_found"})
-            payload = case["tools"][tool]
-            with connect(state) as db:
-                db.execute("BEGIN IMMEDIATE")
-                row = db.execute("SELECT n FROM calls WHERE case_id=? AND tool=?", (cid, tool)).fetchone()
-                n = (row[0] if row else 0) + 1
-                db.execute("INSERT OR REPLACE INTO calls VALUES(?,?,?)", (cid, tool, n))
-                fault = case.get("faults", {}).get(tool)
-                fails = fault and (fault["failures"] == "always" or n <= fault["failures"])
-                audit(db, "tool_read", cid, tool=tool, attempt=n, status=503 if fails else 200)
-            if fails:
-                return self.reply(503, {"error": "upstream_timeout", "retryable": True,
-                                         "message": "Simulated upstream timeout; never treat as no results."})
-            return self.reply(200, payload)
+            _count, failed = store.record_tool_attempt(case_id, tool, case.get("faults", {}).get(tool))
+            if failed:
+                return self.reply(503, {
+                    "error": "upstream_timeout",
+                    "retryable": True,
+                    "message": "Simulated upstream timeout; never treat as no results.",
+                })
+            return self.reply(200, case["tools"][tool])
 
         def do_POST(self):
+            from urllib.parse import urlsplit
+
+            path = urlsplit(self.path).path
+            if path == "/internal/dataset/refresh":
+                self._discard_body()
+                return self._refresh_dataset()
             try:
                 size = int(self.headers.get("Content-Length", "0"))
                 if size < 1 or size > 262144:
@@ -113,82 +107,114 @@ def create_server(data_dir, state, host="127.0.0.1", port=8765):
                     raise ValueError()
             except (ValueError, UnicodeDecodeError):
                 return self.reply(400, {"error": "invalid_json_object"})
-            cid = body.get("case_id")
-            if not isinstance(cid, str) or cid not in case_map:
+            dataset = self._dataset()
+            case_map = {item["case_id"]: item for item in dataset["cases"]}
+            case_id = body.get("case_id")
+            if not isinstance(case_id, str) or case_id not in case_map:
                 return self.reply(400, {"error": "unknown_case"})
-            if self.path == "/v1/reviews":
+            if path == "/v1/reviews":
                 draft = body.get("draft")
-                if not isinstance(draft, dict) or draft.get("case_id") != cid:
+                if not isinstance(draft, dict) or draft.get("case_id") != case_id:
                     return self.reply(400, {"error": "draft_case_id_required"})
-                rid = "rev_" + uuid.uuid4().hex[:12]
-                with connect(state) as db:
-                    db.execute("INSERT INTO reviews VALUES(?,?,?,?,?,?)",
-                               (rid, cid, canonical(draft), digest(draft), "pending", None))
-                    audit(db, "review_requested", cid, review_id=rid, draft_hash=digest(draft))
-                return self.reply(201, {"review_id": rid, "status": "pending", "draft_hash": digest(draft)})
-            if self.path != "/v1/records":
-                with connect(state) as db:
-                    audit(db, "unsupported_write_attempt", cid, path=self.path)
+                review_id = "rev_" + uuid.uuid4().hex[:12]
+                store.insert_review(review_id, case_id, canonical(draft), digest(draft))
+                return self.reply(201, {
+                    "review_id": review_id,
+                    "status": "pending",
+                    "draft_hash": digest(draft),
+                })
+            if path != "/v1/records":
+                store.audit("unsupported_write_attempt", case_id, path=path)
                 return self.reply(404, {"error": "unsupported_operation"})
             if not dataset["allow_write"]:
-                with connect(state) as db:
-                    audit(db, "forbidden_write_attempt", cid)
+                store.audit("forbidden_write_attempt", case_id)
                 return self.reply(403, {"error": "read_only_mission"})
-            draft, rid = body.get("draft"), body.get("review_id")
+            draft, review_id = body.get("draft"), body.get("review_id")
             key = self.headers.get("Idempotency-Key", "")
-            if not isinstance(draft, dict) or not isinstance(rid, str) or not key or len(key) > 128:
+            if not isinstance(draft, dict) or not isinstance(review_id, str) or not key or len(key) > 128:
                 return self.reply(400, {"error": "draft_review_and_idempotency_key_required"})
-            if draft.get("case_id") != cid:
+            if draft.get("case_id") != case_id:
                 return self.reply(400, {"error": "draft_case_mismatch"})
-            fingerprint = digest({"case_id": cid, "draft": draft, "review_id": rid})
-            with connect(state) as db:
-                db.execute("BEGIN IMMEDIATE")
-                previous = db.execute("SELECT * FROM keys WHERE key=?", (key,)).fetchone()
-                if previous:
-                    if previous["hash"] != fingerprint:
-                        audit(db, "idempotency_conflict", cid)
-                        return self.reply(409, {"error": "idempotency_conflict"})
-                    audit(db, "write_replayed", cid)
-                    return self.reply(200, json.loads(previous["response"]))
-                review = db.execute("SELECT * FROM reviews WHERE id=?", (rid,)).fetchone()
-                if not review or review["case_id"] != cid or review["status"] != "approved" or review["hash"] != digest(draft):
-                    audit(db, "unapproved_write_attempt", cid, review_id=rid)
-                    return self.reply(403, {"error": "approval_missing_or_draft_changed"})
-                # logical_key represents a single dispute/claim, across duplicate intake IDs.
-                logical = case_map[cid]["logical_key"]
-                existing = db.execute("SELECT * FROM records WHERE id=?", (logical,)).fetchone()
-                if existing:
-                    audit(db, "duplicate_prevented", cid, existing_record_id=logical)
-                    return self.reply(409, {"error": "duplicate_case", "existing_record_id": logical})
-                response = {"record_id": logical, "case_id": cid, "status": "created", "review_id": rid}
-                db.execute("INSERT INTO records VALUES(?,?,?,?)", (logical, cid, canonical(draft), rid))
-                db.execute("INSERT INTO keys VALUES(?,?,?)", (key, fingerprint, canonical(response)))
-                audit(db, "record_created", cid, record_id=logical, review_id=rid,
-                      draft_hash=digest(draft), reviewer=review["reviewer"])
-            return self.reply(201, response)
+            code, payload = store.commit_record(
+                case_id=case_id,
+                draft_canonical=canonical(draft),
+                draft_hash=digest(draft),
+                review_id=review_id,
+                key=key,
+                fingerprint=digest({"case_id": case_id, "draft": draft, "review_id": review_id}),
+                logical_key=case_map[case_id]["logical_key"],
+                dataset_version=cache.get().version,
+            )
+            return self.reply(code, payload)
+
+        def _discard_body(self):
+            try:
+                size = int(self.headers.get("Content-Length", "0") or "0")
+            except ValueError:
+                return
+            if 0 < size <= 262144:
+                self.rfile.read(size)
+
+        def _refresh_dataset(self):
+            client_host = self.client_address[0]
+            if client_host not in {"127.0.0.1", "::1"}:
+                return self.reply(403, {"error": "refresh_is_local_only"})
+            try:
+                loaded = cache.refresh()
+            except DatasetNotFound as error:
+                return self.reply(404, {"error": "dataset_not_found", "message": str(error)})
+            except DatasetInvalid as error:
+                return self.reply(400, {"error": "dataset_invalid", "message": str(error)})
+            except DatasetError as error:
+                return self.reply(502, {"error": "dataset_unavailable", "message": str(error)})
+            return self.reply(200, {
+                "status": "refreshed",
+                "dataset": loaded.name,
+                "dataset_version": loaded.version,
+            })
 
     return ThreadingHTTPServer((host, port), Handler)
 
 
+def _reviewer_is_allowed(reviewer):
+    from tools.aws_config import auth_required, load_auth_document
+
+    if not auth_required():
+        return True
+    try:
+        document = load_auth_document()
+    except (OSError, RuntimeError, json.JSONDecodeError):
+        sys.exit("Reviewer authorization is required but the auth configuration could not be read.")
+    allowed = {
+        user.get("username")
+        for user in document.get("users", [])
+        if isinstance(user, dict) and user.get("role") == "reviewer" and user.get("username")
+    }
+    if reviewer not in allowed:
+        sys.exit("Reviewer is not authorized.")
+    return True
+
+
 def main():
-    p = argparse.ArgumentParser(description=__doc__)
-    sub = p.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
     serve = sub.add_parser("serve")
     serve.add_argument("--data", type=Path, default=ROOT / "data" / "dev")
     serve.add_argument("--state", type=Path, default=ROOT / ".state" / "mock.sqlite")
+    serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
     for name in ["pending", "approve", "reject", "audit", "reset"]:
-        sp = sub.add_parser(name)
-        sp.add_argument("--state", type=Path, default=ROOT / ".state" / "mock.sqlite")
+        command = sub.add_parser(name)
+        command.add_argument("--state", type=Path, default=ROOT / ".state" / "mock.sqlite")
         if name in ["approve", "reject"]:
-            sp.add_argument("review_id")
-            sp.add_argument("--reviewer", required=True)
+            command.add_argument("review_id")
+            command.add_argument("--reviewer", required=True)
         if name == "reset":
-            sp.add_argument("--confirm", action="store_true", required=True)
-    a = p.parse_args()
-    if a.command == "serve":
-        server = create_server(a.data, a.state, port=a.port)
-        print(f"Fictional training mock at http://127.0.0.1:{a.port}; Ctrl-C stops it.", flush=True)
+            command.add_argument("--confirm", action="store_true", required=True)
+    args = parser.parse_args()
+    if args.command == "serve":
+        server = create_server(args.data, args.state, host=args.host, port=args.port)
+        print(f"Fictional training mock at http://{args.host}:{args.port}; Ctrl-C stops it.", flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:
@@ -196,24 +222,21 @@ def main():
         finally:
             server.server_close()
         return
-    with connect(a.state) as db:
-        if a.command in ["approve", "reject"]:
-            status = "approved" if a.command == "approve" else "rejected"
-            row = db.execute("SELECT * FROM reviews WHERE id=?", (a.review_id,)).fetchone()
-            if not row or row["status"] != "pending":
-                sys.exit("Review must exist and be pending.")
-            db.execute("UPDATE reviews SET status=?,reviewer=? WHERE id=?", (status, a.reviewer, a.review_id))
-            audit(db, "human_" + status, row["case_id"], review_id=a.review_id,
-                  reviewer=a.reviewer, draft_hash=row["hash"])
-            print(status)
-        elif a.command == "pending":
-            print(json.dumps([dict(x) for x in db.execute("SELECT * FROM reviews WHERE status='pending'")], indent=2))
-        elif a.command == "audit":
-            print(json.dumps([dict(x) for x in db.execute("SELECT * FROM audit ORDER BY seq")], indent=2))
-        elif a.command == "reset":
-            for table in ["reviews", "records", "keys", "calls", "audit"]:
-                db.execute(f"DELETE FROM {table}")
-            print("Reset local mock state. Stop all clients before resetting.")
+    store = open_store(args.state)
+    if args.command in ["approve", "reject"]:
+        status = "approved" if args.command == "approve" else "rejected"
+        _reviewer_is_allowed(args.reviewer)
+        changed = store.transition_review(args.review_id, status, args.reviewer)
+        if not changed:
+            sys.exit("Review must exist and be pending.")
+        print(status)
+    elif args.command == "pending":
+        print(json.dumps(store.list_pending(), indent=2))
+    elif args.command == "audit":
+        print(json.dumps(store.list_audit(), indent=2))
+    elif args.command == "reset":
+        store.reset()
+        print("Reset local mock state. Stop all clients before resetting.")
 
 
 if __name__ == "__main__":

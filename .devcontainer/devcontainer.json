@@ -1,4 +1,6 @@
 // Opens this repo in the compose "app" service (Reopen in Container).
+// Buildx 0.38 blocks the temporary Dockerfile Dev Containers generates unless
+// the host docker process has BUILDX_BAKE_ENTITLEMENTS_FS=0 (Compose v5.6.1).
 {
   "name": "auto-fnol",
   "dockerComposeFile": ["../docker-compose.yml"],

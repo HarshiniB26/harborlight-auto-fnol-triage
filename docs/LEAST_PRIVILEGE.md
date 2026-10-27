@@ -33,3 +33,8 @@ python tools/check_secrets.py
 The supplied `SYNTHETIC-PRIVATE-*` values are deliberate restricted training
 fixtures, not credentials. They remain in supplied fixtures but must never be
 present in application output, persisted workbench state, or logs.
+
+The AWS controls that implement this boundary are described in
+[security.md](security.md). IAM lets the instance read the dataset object and
+the database secrets. It does not grant handler permissions. Handlers still
+cannot approve a review from the workbench.

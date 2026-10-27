@@ -115,7 +115,8 @@ uv run --with pytest --with pytest-cov python -m pytest tests/ \
   --cov=workbench --cov-report=term-missing --cov-fail-under=98
 ```
 
-The current suite contains 34 tests and covers 99% of the `workbench` package.
+The current suite contains 59 tests. Two PostgreSQL tests run only when a
+local database is reachable. The workbench package stays at 99% coverage.
 
 After preparing all cases, export and evaluate the exact submission array:
 
@@ -155,3 +156,8 @@ uv run --locked python tools/runtime.py audit > reports/audit.json
 
 Hardening evidence is documented in `docs/HARDENING.md`, least privilege in
 `docs/LEAST_PRIVILEGE.md`, and the incident procedure in `docs/RUNBOOK.md`.
+
+AWS deployment for this same application is documented in
+`docs/aws-migration-plan.md`, `docs/aws-architecture.md`, `docs/deployment.md`,
+and `docs/security.md`. Local development stays on SQLite and does not need
+AWS credentials.

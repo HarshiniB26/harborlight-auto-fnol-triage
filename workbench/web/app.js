@@ -138,6 +138,56 @@ async function act(path) {
   }
 }
 
-loadQueue().catch((error) => {
+const loginPanel = document.querySelector("#login");
+const aside = document.querySelector("aside");
+const loginForm = document.querySelector("#login-form");
+const loginMessage = document.querySelector("#login-message");
+
+function showQueueError(error) {
+  panel.hidden = false;
   panel.innerHTML = `<p class="banner">${esc(error.message)}. Start the mock on port 8767, then refresh.</p>`;
+}
+
+async function boot() {
+  const session = await api("/api/session");
+  if (session.auth_required && !session.authenticated) {
+    loginPanel.hidden = false;
+    aside.hidden = true;
+    panel.hidden = true;
+    if (session.error) {
+      loginMessage.hidden = false;
+      loginMessage.textContent = "Sign-in is required but the user directory is not configured.";
+    }
+    return;
+  }
+  await loadQueue();
+}
+
+loginForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  loginMessage.hidden = true;
+  fetch("/api/login", {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({
+      username: document.querySelector("#username").value,
+      password: document.querySelector("#password").value,
+    }),
+  }).then(async (response) => {
+    const body = await response.json();
+    if (!response.ok) {
+      loginMessage.hidden = false;
+      loginMessage.textContent = body.message || "Sign-in failed.";
+      return;
+    }
+    loginPanel.hidden = true;
+    aside.hidden = false;
+    panel.hidden = false;
+    await loadQueue();
+  }).catch((error) => {
+    loginMessage.hidden = false;
+    loginMessage.textContent = error.message;
+  });
 });
+
+boot().catch(showQueueError);

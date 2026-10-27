@@ -1,0 +1,677 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Cost-conscious FNOL deployment. One public EC2 instance runs Nginx and the
+  application container. PostgreSQL is private. The dataset bucket is private
+  and is not inside the VPC. No load balancer, NAT gateway, or container service.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: {default: Application}
+        Parameters: [ProjectName, Environment, AllowedCidr, AllowHttp, DomainName, HostedZoneId]
+      - Label: {default: Compute}
+        Parameters: [InstanceType, AllocateElasticIp, AmiId]
+      - Label: {default: Database}
+        Parameters: [DBInstanceClass, DBAllocatedStorage, DBBackupRetention, DBUsername, MultiAZ]
+      - Label: {default: Dataset and model}
+        Parameters: [DatasetKey, EnableBedrock, BedrockModelArn]
+      - Label: {default: Network}
+        Parameters: [VpcCidr, PublicSubnetCidr, PrivateSubnetACidr, PrivateSubnetBCidr]
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: fnol
+    AllowedPattern: "^[a-z][a-z0-9-]{1,20}$"
+    ConstraintDescription: Use 2-21 lowercase letters, digits, and hyphens, starting with a letter.
+    Description: Short name used in resource names. Must be lowercase so the S3 bucket name is valid.
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+    Description: Deployment environment. Production enables RDS deletion protection.
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedPattern: "^[a-z][a-z0-9]+\\.[a-z0-9]+$"
+    Description: EC2 instance type. t3.small is the cost-conscious default for about 50 users.
+  DBInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    AllowedPattern: "^db\\.[a-z0-9]+\\.[a-z0-9]+$"
+    Description: RDS instance class. db.t4g.micro is the Single-AZ default.
+  DBAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 1024
+    Description: RDS storage in GiB. 20 is the minimum for gp3 PostgreSQL.
+  DBBackupRetention:
+    Type: Number
+    Default: 7
+    MinValue: 1
+    MaxValue: 35
+    Description: Automated backup retention in days.
+  DBUsername:
+    Type: String
+    Default: fnol_admin
+    AllowedPattern: "^[a-zA-Z][a-zA-Z0-9_]{0,30}$"
+    Description: RDS master user. The application connects as a separate role created during migration.
+  AllowedCidr:
+    Type: String
+    Default: 203.0.113.10/32
+    AllowedPattern: "^(\\d{1,3}\\.){3}\\d{1,3}/\\d{1,2}$"
+    Description: >
+      Client CIDR allowed to reach ports 80 and 443. The default is documentation
+      range TEST-NET-3 and will not admit real handlers. Replace it with the office or VPN CIDR.
+  AllowHttp:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Allow inbound TCP 80 for Certbot HTTP-01 and the initial redirect. Does not publish the application ports.
+  DomainName:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[A-Za-z0-9.-]{1,253}$"
+    Description: Optional DNS name. Leave empty until a name is delegated. Do not include a trailing dot.
+  HostedZoneId:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^Z[A-Z0-9]{8,32}$"
+    Description: Optional existing Route 53 hosted zone id. The template does not create a zone.
+  AllocateElasticIp:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Allocate an Elastic IP so the application address stays stable.
+  EnableBedrock:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Grant InvokeModel for one model or inference profile. Leave false unless the application flag is also enabled.
+  BedrockModelArn:
+    Type: String
+    Default: arn:aws:bedrock:*:*:foundation-model/replace-me
+    AllowedPattern: "^arn:(aws[a-zA-Z0-9-]*|\\*):[^:]+:[^:]*:[^:]*:.+$"
+    Description: Bedrock model or inference-profile ARN. Replace the placeholder when EnableBedrock is true.
+  DatasetKey:
+    Type: String
+    Default: dataset.json
+    AllowedPattern: "^[A-Za-z0-9][A-Za-z0-9._/-]{0,200}$"
+    Description: Object key for the authoritative dataset.
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: Amazon Linux 2023 AMI. Session Manager is preinstalled.
+  MultiAZ:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Set true for a Multi-AZ database. The default is one Availability Zone to limit cost.
+  VpcCidr:
+    Type: String
+    Default: 10.42.0.0/16
+    AllowedPattern: "^(\\d{1,3}\\.){3}\\d{1,3}/\\d{1,2}$"
+    Description: VPC CIDR. The subnet CIDRs below must fit inside it.
+  PublicSubnetCidr:
+    Type: String
+    Default: 10.42.0.0/24
+    AllowedPattern: "^(\\d{1,3}\\.){3}\\d{1,3}/\\d{1,2}$"
+    Description: Public subnet for the EC2 instance.
+  PrivateSubnetACidr:
+    Type: String
+    Default: 10.42.10.0/24
+    AllowedPattern: "^(\\d{1,3}\\.){3}\\d{1,3}/\\d{1,2}$"
+    Description: First private database subnet.
+  PrivateSubnetBCidr:
+    Type: String
+    Default: 10.42.11.0/24
+    AllowedPattern: "^(\\d{1,3}\\.){3}\\d{1,3}/\\d{1,2}$"
+    Description: Second private database subnet, in another Availability Zone.
+
+Conditions:
+  IsProd: !Equals [!Ref Environment, prod]
+  UseEip: !Equals [!Ref AllocateElasticIp, "true"]
+  AllowHttpIngress: !Equals [!Ref AllowHttp, "true"]
+  UseMultiAZ: !Equals [!Ref MultiAZ, "true"]
+  EnableBedrockAccess: !Equals [!Ref EnableBedrock, "true"]
+  UseDns: !And
+    - !Not [!Equals [!Ref DomainName, ""]]
+    - !Not [!Equals [!Ref HostedZoneId, ""]]
+    - !Condition UseEip
+
+Rules:
+  BedrockModelRequired:
+    RuleCondition: !Equals [!Ref EnableBedrock, "true"]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref BedrockModelArn, "arn:aws:bedrock:*:*:foundation-model/replace-me"]]
+        AssertDescription: Replace BedrockModelArn when EnableBedrock is true.
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{Key: Name, Value: !Sub "${ProjectName}-${Environment}-vpc"}]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{Key: Name, Value: !Sub "${ProjectName}-${Environment}-igw"}]
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnetCidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: !Sub "${ProjectName}-${Environment}-public"}]
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnetACidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags: [{Key: Name, Value: !Sub "${ProjectName}-${Environment}-db-a"}]
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnetBCidr
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags: [{Key: Name, Value: !Sub "${ProjectName}-${Environment}-db-b"}]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags: [{Key: Name, Value: !Sub "${ProjectName}-${Environment}-public-routes"}]
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags: [{Key: Name, Value: !Sub "${ProjectName}-${Environment}-db-routes"}]
+
+  PrivateRouteAssociationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateRouteAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTable
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: FNOL Nginx. Application and database ports are not public.
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref AllowedCidr
+          Description: HTTPS from permitted handlers
+        - !If
+          - AllowHttpIngress
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            CidrIp: !Ref AllowedCidr
+            Description: HTTP for Certbot or redirect
+          - !Ref AWS::NoValue
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: AWS APIs, package mirrors, and Certbot
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: !Ref VpcCidr
+          Description: DNS queries to the VPC resolver
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: !Ref VpcCidr
+          Description: DNS queries to the VPC resolver
+      Tags: [{Key: Name, Value: !Sub "${ProjectName}-${Environment}-app"}]
+
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: PostgreSQL is reachable only from the FNOL application instance.
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+          Description: PostgreSQL from the application security group
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 127.0.0.1/32
+          Description: No required database egress
+      Tags: [{Key: Name, Value: !Sub "${ProjectName}-${Environment}-db"}]
+
+  AppDbEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref AppSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref DbSecurityGroup
+      Description: PostgreSQL to RDS
+
+  DatasetBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ProjectName}-${Environment}-${AWS::AccountId}-${AWS::Region}-dataset"
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldDatasetVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      Tags: [{Key: Name, Value: !Sub "${ProjectName}-${Environment}-dataset"}]
+
+  DatasetBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DatasetBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt DatasetBucket.Arn
+              - !Sub "${DatasetBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Private subnets for FNOL PostgreSQL
+      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+      Tags: [{Key: Name, Value: !Sub "${ProjectName}-${Environment}-db-subnets"}]
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub "${ProjectName}-${Environment}-postgres"
+      Engine: postgres
+      EngineVersion: "16.15"
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: !Ref DBAllocatedStorage
+      StorageType: gp3
+      StorageEncrypted: true
+      DBName: fnol
+      MasterUsername: !Ref DBUsername
+      ManageMasterUserPassword: true
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups: [!Ref DbSecurityGroup]
+      PubliclyAccessible: false
+      BackupRetentionPeriod: !Ref DBBackupRetention
+      MultiAZ: !If [UseMultiAZ, true, false]
+      DeletionProtection: !If [IsProd, true, false]
+      AutoMinorVersionUpgrade: true
+      CopyTagsToSnapshot: true
+      EnablePerformanceInsights: false
+      MonitoringInterval: 0
+      Tags: [{Key: Name, Value: !Sub "${ProjectName}-${Environment}-postgres"}]
+
+  AuthSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}/${Environment}/auth"
+      Description: Handler and reviewer sign-in document. Populate this before enabling application auth.
+
+  AppDbSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}/${Environment}/db-app"
+      Description: Password for the restricted fnol_app database role. Migration copies it into PostgreSQL.
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"fnol_app"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludePunctuation: true
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/fnol/${ProjectName}/${Environment}/application"
+      RetentionInDays: 14
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Environment}-ec2"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        - PolicyName: fnol-application
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadDatasetAndRelease
+                Effect: Allow
+                Action: s3:GetObject
+                Resource:
+                  - !Sub "${DatasetBucket.Arn}/${DatasetKey}"
+                  - !Sub "${DatasetBucket.Arn}/releases/fnol-app.tar.gz"
+              - Sid: ReadApplicationSecrets
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !GetAtt Database.MasterUserSecret.SecretArn
+                  - !Ref AuthSecret
+                  - !Ref AppDbSecret
+              - Sid: WriteApplicationLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${LogGroup}"
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${LogGroup}:*"
+              - !If
+                - EnableBedrockAccess
+                - Sid: InvokeConfiguredModel
+                  Effect: Allow
+                  Action: bedrock:InvokeModel
+                  Resource: !Ref BedrockModelArn
+                - !Ref AWS::NoValue
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${ProjectName}-${Environment}-ec2"
+      Roles: [!Ref InstanceRole]
+
+  Instance:
+    Type: AWS::EC2::Instance
+    DependsOn: [AttachGateway, PublicRouteAssociation]
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      IamInstanceProfile: !Ref InstanceProfile
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds: [!Ref AppSecurityGroup]
+      MetadataOptions:
+        HttpTokens: required
+        HttpEndpoint: enabled
+        HttpPutResponseHopLimit: 2
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -euo pipefail
+            dnf install -y docker nginx amazon-cloudwatch-agent
+            dnf install -y docker-compose-plugin || dnf install -y docker-compose || echo "Docker Compose plugin was not installed. deploy-app.sh needs it."
+            command -v aws >/dev/null 2>&1 || dnf install -y awscli
+            dnf install -y certbot python3-certbot-nginx || echo "Certbot package was not installed. See docs/deployment.md."
+            systemctl enable --now docker
+            usermod -aG docker ec2-user || true
+            mkdir -p /opt/fnol/web /opt/fnol/src /var/log/fnol /var/www/certbot
+            cat >/etc/nginx/conf.d/fnol-bootstrap.conf <<'EOF'
+            server {
+              listen 80 default_server;
+              server_name _;
+              location /.well-known/acme-challenge/ { root /var/www/certbot; }
+              location / {
+                default_type text/plain;
+                return 503 "FNOL application is not deployed yet\n";
+              }
+            }
+            EOF
+            rm -f /etc/nginx/conf.d/default.conf
+            nginx -t
+            systemctl enable --now nginx
+            cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'EOF'
+            {
+              "logs": {
+                "logs_collected": {
+                  "files": {
+                    "collect_list": [
+                      {
+                        "file_path": "/var/log/fnol/*.log",
+                        "log_group_name": "${LogGroupName}",
+                        "log_stream_name": "{instance_id}/fnol"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+            EOF
+            /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json || true
+          - LogGroupName: !Ref LogGroup
+      Tags: [{Key: Name, Value: !Sub "${ProjectName}-${Environment}-app"}]
+
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    Condition: UseEip
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+      Tags: [{Key: Name, Value: !Sub "${ProjectName}-${Environment}-eip"}]
+
+  ElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Condition: UseEip
+    Properties:
+      AllocationId: !GetAtt ElasticIp.AllocationId
+      InstanceId: !Ref Instance
+
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: UseDns
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "${DomainName}."
+      Type: A
+      TTL: "300"
+      ResourceRecords:
+        - !Ref ElasticIp
+
+  RuntimeUnavailableFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref LogGroup
+      FilterPattern: '"runtime_unavailable"'
+      MetricTransformations:
+        - MetricNamespace: !Sub "FNOL/${ProjectName}"
+          MetricName: RuntimeUnavailable
+          MetricValue: "1"
+          DefaultValue: 0
+
+  RuntimeUnavailableAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-${Environment}-runtime-unavailable"
+      AlarmDescription: The workbench reported that the runtime dependency is unavailable.
+      Namespace: !Sub "FNOL/${ProjectName}"
+      MetricName: RuntimeUnavailable
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  InstanceStatusAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-${Environment}-ec2-status"
+      AlarmDescription: EC2 instance or system status check failed.
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed
+      Dimensions: [{Name: InstanceId, Value: !Ref Instance}]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: breaching
+
+  DatabaseCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-${Environment}-rds-cpu"
+      AlarmDescription: RDS CPU is high for this small instance.
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Dimensions: [{Name: DBInstanceIdentifier, Value: !Ref Database}]
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: breaching
+
+  DatabaseStorageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-${Environment}-rds-storage"
+      AlarmDescription: RDS free storage is below 2 GiB.
+      Namespace: AWS/RDS
+      MetricName: FreeStorageSpace
+      Dimensions: [{Name: DBInstanceIdentifier, Value: !Ref Database}]
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 2147483648
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+
+  DatabaseConnectionsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-${Environment}-rds-connections"
+      AlarmDescription: RDS connections are high for a db.t4g.micro-sized deployment.
+      Namespace: AWS/RDS
+      MetricName: DatabaseConnections
+      Dimensions: [{Name: DBInstanceIdentifier, Value: !Ref Database}]
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 40
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  InstanceId:
+    Description: EC2 instance id for Session Manager and deployment commands.
+    Value: !Ref Instance
+  PublicIp:
+    Description: Elastic IP when allocated, otherwise the instance public IP.
+    Value: !If [UseEip, !Ref ElasticIp, !GetAtt Instance.PublicIp]
+  DatabaseEndpoint:
+    Description: Private RDS endpoint address. It is not reachable from the internet.
+    Value: !GetAtt Database.Endpoint.Address
+  DatabasePort:
+    Description: PostgreSQL port.
+    Value: !GetAtt Database.Endpoint.Port
+  DatasetBucketName:
+    Description: Private bucket that stores dataset.json.
+    Value: !Ref DatasetBucket
+  DatasetObjectKey:
+    Description: Dataset object key.
+    Value: !Ref DatasetKey
+  InstanceRoleName:
+    Description: EC2 instance role name.
+    Value: !Ref InstanceRole
+  ApplicationUrl:
+    Description: >
+      Intended application URL. An https URL still requires the operator to finish
+      Certbot issuance. This output is not a claim that HTTPS is already active.
+    Value: !If
+      - UseDns
+      - !Sub "https://${DomainName}"
+      - !If [UseEip, !Sub "http://${ElasticIp}", !Sub "http://${Instance.PublicIp}"]
+  DatabaseSecretArn:
+    Description: ARN of the RDS-managed master secret. This is not the secret value.
+    Value: !GetAtt Database.MasterUserSecret.SecretArn
+  AppDbSecretArn:
+    Description: ARN of the restricted application database secret. This is not the secret value.
+    Value: !Ref AppDbSecret
+  AuthSecretArn:
+    Description: ARN of the handler sign-in secret. This is not the secret value.
+    Value: !Ref AuthSecret
+  LogGroupName:
+    Description: CloudWatch log group for application and agent logs.
+    Value: !Ref LogGroup

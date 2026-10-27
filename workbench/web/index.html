@@ -7,6 +7,16 @@
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
+  <section id="login" hidden>
+    <form id="login-form">
+      <p class="brand">Harborlight</p>
+      <h2>Handler sign-in</h2>
+      <label>Username <input id="username" name="username" autocomplete="username" required></label>
+      <label>Password <input id="password" name="password" type="password" autocomplete="current-password" required></label>
+      <button class="action" type="submit">Sign in</button>
+      <p id="login-message" class="banner" hidden></p>
+    </form>
+  </section>
   <aside>
     <p class="brand">Harborlight</p>
     <h1>FNOL queue</h1>
