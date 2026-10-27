@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AUTO FNOL Copilot</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">AUTO FNOL Copilot</div>
+    <input id="search" type="search" placeholder="Search by case ID" aria-label="Search by case ID">
+    <div class="handler"><span>CH</span><strong>Claims Handler</strong></div>
+  </header>
+  <div class="shell">
+    <nav class="nav" aria-label="Work queues">
+      <button class="nav-item active" data-filter="work" type="button">My Work</button>
+      <button class="nav-item" data-filter="pending" type="button">Pending Review</button>
+      <button class="nav-item" data-filter="records" type="button">Created Records</button>
+      <button class="export" id="export-results" type="button">Export results.json</button>
+      <p class="note" id="export-message"></p>
+    </nav>
+    <section class="queue-pane">
+      <h1>FNOL queue</h1>
+      <p class="count" id="queue-count">All Cases</p>
+      <ul id="queue"></ul>
+    </section>
+    <main id="case">
+      <p class="empty">Select a case.</p>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

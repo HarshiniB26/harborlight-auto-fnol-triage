@@ -170,6 +170,32 @@ def create_server(data_dir, state, host="127.0.0.1", port=8765):
     return ThreadingHTTPServer((host, port), Handler)
 
 
+def _file_approved_review(db, review, reviewer):
+    """Create the one mock record for a review at the moment it is approved."""
+
+    dataset = json.loads((ROOT / "data" / "dev" / "dataset.json").read_text())
+    if not dataset.get("allow_write"):
+        return None
+    case_id = review["case_id"]
+    logical = next(case["logical_key"] for case in dataset["cases"] if case["case_id"] == case_id)
+    existing = db.execute("SELECT id FROM records WHERE id=?", (logical,)).fetchone()
+    if existing:
+        return existing["id"]
+    draft = json.loads(review["draft"])
+    review_id = review["id"]
+    key = "fnol-" + digest({"case_id": case_id, "review_id": review_id, "hash": review["hash"]})
+    fingerprint = digest({"case_id": case_id, "draft": draft, "review_id": review_id})
+    response = {"record_id": logical, "case_id": case_id, "status": "created", "review_id": review_id}
+    db.execute("INSERT INTO records VALUES(?,?,?,?)", (logical, case_id, canonical(draft), review_id))
+    db.execute(
+        "INSERT INTO keys VALUES(?,?,?)",
+        (key, fingerprint, canonical(response)),
+    )
+    audit(db, "record_created", case_id, record_id=logical, review_id=review_id,
+          draft_hash=review["hash"], reviewer=reviewer)
+    return logical
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
@@ -206,7 +232,11 @@ def main():
             db.execute("UPDATE reviews SET status=?,reviewer=? WHERE id=?", (status, a.reviewer, a.review_id))
             audit(db, "human_" + status, row["case_id"], review_id=a.review_id,
                   reviewer=a.reviewer, draft_hash=row["hash"])
-            print(status)
+            if status == "approved":
+                record_id = _file_approved_review(db, row, a.reviewer)
+                print(f"approved {record_id}")
+            else:
+                print(status)
         elif a.command == "pending":
             print(json.dumps([dict(x) for x in db.execute("SELECT * FROM reviews WHERE status='pending'")], indent=2))
         elif a.command == "audit":
