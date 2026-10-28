@@ -1,0 +1,16 @@
+# IDE workspace. The runtime and workbench services stay in the root Compose file.
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: auto-fnol-participant
+    working_dir: /app
+    # The image user cannot write the bind-mounted tree.
+    user: root
+    volumes:
+      - .:/app
+    # Recreate .venv on the mount; the image copy is hidden by the bind.
+    command: ["sh", "-c", "uv sync --locked && sleep infinity"]
+    healthcheck:
+      disable: true

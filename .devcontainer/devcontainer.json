@@ -1,9 +1,10 @@
 // Opens this repo in the compose "app" service (Reopen in Container).
 {
   "name": "auto-fnol",
-  "dockerComposeFile": ["../docker-compose.yml"],
+  "dockerComposeFile": ["../docker-compose.yml", "docker-compose.yml"],
   "service": "app",
   "workspaceFolder": "/app",
+  "overrideCommand": false,
   "shutdownAction": "stopCompose",
   "customizations": {
     "vscode": {
