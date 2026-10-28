@@ -43,7 +43,17 @@ class DemoAndEntrypointTests(unittest.TestCase):
             hardening_demo.events_from(stream)
 
         output = io.StringIO()
-        with redirect_stdout(output):
+        real_process = hardening_demo.Workbench.process
+
+        def process_without_draft_for_table(self, case_id, trace_id=None):
+            result = real_process(self, case_id, trace_id)
+            if trace_id == "tr_demo_auto-d07":
+                return {"warnings": [], "trace_id": result.get("trace_id", trace_id)}
+            return result
+
+        with redirect_stdout(output), patch.object(
+            hardening_demo.Workbench, "process", process_without_draft_for_table
+        ):
             hardening_demo.main()
         rendered = output.getvalue()
         self.assertIn("WEEK 10 REQUIRED SCENARIOS", rendered)

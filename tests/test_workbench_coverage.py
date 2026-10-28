@@ -319,6 +319,14 @@ class ServiceCoverageTests(unittest.TestCase):
         workbench.submit_review.return_value = {"error": "review_failed"}
         self.assertEqual(workbench.prepare_queue(case_ids=["A"])["failed_case_ids"], ["A"])
 
+        workbench.process.return_value = {
+            "error": "not_ready",
+            "message": "Processing returned an error before review.",
+        }
+        failed = workbench.prepare_queue(case_ids=["A"])
+        self.assertEqual(failed["failed_case_ids"], ["A"])
+        self.assertEqual(failed["cases"][0]["error"], "batch_case_failed")
+
         self.assertEqual(workbench.apply_dataset_diff(["A"])["error"], "cursor_unavailable")
         cursor = self.workbench(queue_cursor=True)
         self.assertEqual(cursor.apply_dataset_diff([1])["error"], "invalid_current_ids")
