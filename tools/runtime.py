@@ -290,7 +290,7 @@ def main():
             print(json.dumps([dict(x) for x in db.execute("SELECT * FROM reviews WHERE status='pending'")], indent=2))
         elif a.command == "audit":
             print(json.dumps([dict(x) for x in db.execute("SELECT * FROM audit ORDER BY seq")], indent=2))
-        elif a.command == "reset":
+        else:  # reset is the only remaining argparse subcommand.
             for table in ["reviews", "records", "keys", "calls", "audit"]:
                 db.execute(f"DELETE FROM {table}")
             print("Reset local mock state. Stop all clients before resetting.")

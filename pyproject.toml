@@ -9,3 +9,17 @@ dependencies = [
 ]
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+    "coverage[toml]>=7.6,<8",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["workbench", "tools"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = false
