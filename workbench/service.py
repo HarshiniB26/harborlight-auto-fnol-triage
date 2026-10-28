@@ -328,6 +328,33 @@ class Workbench:
                         trace_id=trace_id,
                     )
                 )
+                # Do not create drafts when required APIs fail.
+                unavailable = [
+                    name
+                    for name, value in (
+                        ("policy", policy),
+                        ("claims", claims),
+                    )
+                    if not isinstance(value, dict)
+                ]
+                if unavailable:
+                    self.observability.event(
+                        "processing_dependency_unavailable",
+                        level="WARNING",
+                        trace_id=trace_id,
+                        case_id=case_id,
+                        dependencies=unavailable,
+                    )
+                    return {
+                        "error": "dependency_unavailable",
+                        "message": (
+                            "Required insurance API unavailable; "
+                            "case deferred for retry."
+                        ),
+                        "dependencies": unavailable,
+                        "trace_id": trace_id,
+                    }
+
                 self.observability.event(
                     "evidence_retrieval_completed",
                     trace_id=trace_id,
@@ -417,7 +444,7 @@ class Workbench:
             if review and review.get("status") in ("pending", "approved"):
                 return review
             status, payload = self.client.submit_review(case_id, draft, trace_id)
-            if status != 201 or not isinstance(payload, dict):
+            if status not in (200, 201) or not isinstance(payload, dict) or not payload.get("review_id"):
                 return {"error": "review_failed", "message": "The review was not accepted."}
             entry["review_id"] = payload["review_id"]
             entry["review_submitted_at"] = utc_now()

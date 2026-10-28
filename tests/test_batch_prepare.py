@@ -78,7 +78,7 @@ class BatchPrepareTests(unittest.TestCase):
         self.assertEqual(result["handled_case_ids"], ["AUTO-D01", "AUTO-D02"])
         self.assertTrue(all(row["review"]["status"] == "pending" for row in result["cases"]))
 
-    def test_dependency_outage_still_submits_safe_manual_review_fallback(self):
+    def test_dependency_outage_defers_case_without_draft_or_review(self):
         broken = Workbench(
             f"http://127.0.0.1:{self.runtime.server_port}",
             ROOT / "data/dev",
@@ -100,10 +100,12 @@ class BatchPrepareTests(unittest.TestCase):
 
         result = broken.prepare_queue(trace_id="tr_fallback", case_ids=["AUTO-D01"])
 
-        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["status"], "completed_with_errors")
+        self.assertEqual(result["failed_case_ids"], ["AUTO-D01"])
         row = result["cases"][0]
-        self.assertEqual(row["process"]["draft"]["routing"], "manual_review")
-        self.assertEqual(row["review"]["status"], "pending")
+        self.assertEqual(row["process"]["error"], "dependency_unavailable")
+        self.assertNotIn("review", row)
+        self.assertNotIn("AUTO-D01", broken.state_store.read())
 
     def test_dataset_diff_only_processes_additions_and_preserves_old_state(self):
         first = self.workbench.apply_dataset_diff(

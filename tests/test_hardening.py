@@ -140,9 +140,18 @@ class HardenedWorkflowTests(unittest.TestCase):
         first = self.workbench.process("AUTO-D07", "tr_outage_one")
         second = self.workbench.process("AUTO-D07", "tr_outage_two")
         third = self.workbench.process("AUTO-D07", "tr_outage_three")
-        self.assertEqual(first["draft"]["routing"], "manual_review")
-        self.assertEqual(second["draft"]["routing"], "manual_review")
-        self.assertEqual(third["draft"]["routing"], "manual_review")
+        for result in (first, second, third):
+            self.assertEqual(
+                result["error"],
+                "dependency_unavailable",
+            )
+            self.assertNotIn("draft", result)
+
+        # Technical outages must not create incomplete drafts.
+        self.assertNotIn(
+            "AUTO-D07",
+            self.workbench.state_store.read(),
+        )
         with sqlite3.connect(self.mock_path) as db:
             attempts = db.execute(
                 "SELECT n FROM calls WHERE case_id='AUTO-D07' AND tool='claims'"

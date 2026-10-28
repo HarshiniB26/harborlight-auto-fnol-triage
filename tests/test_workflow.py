@@ -35,14 +35,53 @@ class WorkflowTests(unittest.TestCase):
 
     def test_development_cases_match_the_output_contract(self):
         cases = self.workbench.list_cases()
-        drafts = [self.workbench.process(case["case_id"])["draft"] for case in cases]
+        results = {
+            case["case_id"]: self.workbench.process(case["case_id"])
+            for case in cases
+        }
+
+        # D07 simulates a persistent dependency outage.
+        self.assertEqual(
+            results["AUTO-D07"]["error"],
+            "dependency_unavailable",
+        )
+        self.assertNotIn("draft", results["AUTO-D07"])
+
+        drafts = [
+            result["draft"]
+            for result in results.values()
+            if "draft" in result
+        ]
+
         dataset = json.loads((ROOT / "data/dev/dataset.json").read_text())
         gold = json.loads((ROOT / "feedback/dev_gold.json").read_text())
-        report = evaluate(dataset, gold, drafts)
+        successful_ids = {draft["case_id"] for draft in drafts}
+
+        filtered_dataset = dict(dataset)
+        filtered_dataset["cases"] = [
+            case for case in dataset["cases"]
+            if case["case_id"] in successful_ids
+        ]
+
+        filtered_gold = {
+            case_id: expected
+            for case_id, expected in gold.items()
+            if case_id in successful_ids
+        } if isinstance(gold, dict) else [
+            item for item in gold
+            if item["case_id"] in successful_ids
+        ]
+
+        report = evaluate(
+            filtered_dataset,
+            filtered_gold,
+            drafts,
+        )
         self.assertTrue(report["passed"], json.dumps(report, indent=2))
         exported = self.workbench.export_results()
-        self.assertIsInstance(exported, list)
-        self.assertEqual(exported, drafts)
+
+        self.assertEqual(exported["error"], "drafts_incomplete")
+        self.assertEqual(exported["missing_case_ids"], ["AUTO-D07"])
         blob = json.dumps(drafts)
         self.assertNotIn("SYNTHETIC-PRIVATE-", blob)
         self.assertNotIn("private_token", blob)

@@ -149,12 +149,62 @@ def create_server(data_dir, state, host="127.0.0.1", port=8765):
                 draft = body.get("draft")
                 if not isinstance(draft, dict) or draft.get("case_id") != cid:
                     return self.reply(400, {"error": "draft_case_id_required"})
-                rid = "rev_" + uuid.uuid4().hex[:12]
+                draft_hash = digest(draft)
                 with connect(state) as db:
-                    db.execute("INSERT INTO reviews VALUES(?,?,?,?,?,?)",
-                               (rid, cid, canonical(draft), digest(draft), "pending", None))
-                    audit(db, "review_requested", cid, review_id=rid, draft_hash=digest(draft))
-                return self.reply(201, {"review_id": rid, "status": "pending", "draft_hash": digest(draft)})
+                    # Serialize review creation across HTTP threads.
+                    db.execute("BEGIN IMMEDIATE")
+
+                    previous = db.execute(
+                        "SELECT id, status FROM reviews "
+                        "WHERE case_id=? AND hash=? ORDER BY rowid LIMIT 1",
+                        (cid, draft_hash),
+                    ).fetchone()
+
+                    if previous:
+                        audit(
+                            db,
+                            "review_replayed",
+                            cid,
+                            review_id=previous["id"],
+                            draft_hash=draft_hash,
+                        )
+                        result = {
+                            "review_id": previous["id"],
+                            "status": previous["status"],
+                            "draft_hash": draft_hash,
+                        }
+                        code = 200
+                    else:
+                        rid = "rev_" + uuid.uuid4().hex[:12]
+
+                        db.execute(
+                            "INSERT INTO reviews VALUES(?,?,?,?,?,?)",
+                            (
+                                rid,
+                                cid,
+                                canonical(draft),
+                                draft_hash,
+                                "pending",
+                                None,
+                            ),
+                        )
+
+                        audit(
+                            db,
+                            "review_requested",
+                            cid,
+                            review_id=rid,
+                            draft_hash=draft_hash,
+                        )
+
+                        result = {
+                            "review_id": rid,
+                            "status": "pending",
+                            "draft_hash": draft_hash,
+                        }
+                        code = 201
+
+                return self.reply(code, result)
             if self.path != "/v1/records":
                 with connect(state) as db:
                     audit(db, "unsupported_write_attempt", cid, path=self.path)
