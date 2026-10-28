@@ -53,6 +53,20 @@ def event_summary(event):
     return name
 
 
+def assert_idempotent_replay(first, replay_status, replay_record_id,
+                             first_record_id, record_count, replay_count):
+    """Fail loudly unless an identical retry returned the original record."""
+
+    if not (
+        first["status"] == "created"
+        and replay_status == 200
+        and replay_record_id == first_record_id
+        and record_count == 1
+        and replay_count == 1
+    ):
+        raise AssertionError("identical record request was not idempotent")
+
+
 def main():
     """Exercise normal, ambiguous, attack, transient, and outage behavior."""
 
@@ -95,10 +109,16 @@ def main():
             print("-" * 104)
             for name, case_id in scenarios:
                 result = results[name]
-                draft = result["draft"]
+                draft = result.get("draft")
+                if draft is None:
+                    classification = "deferred"
+                    routing = "retry_required"
+                else:
+                    classification = draft["classification"]
+                    routing = draft["routing"]
                 print(
-                    f"{name:<20} {case_id:<10} {draft['classification']:<11} "
-                    f"{draft['routing']:<14} {len(result['warnings']):<5} "
+                    f"{name:<20} {case_id:<10} {classification:<11} "
+                    f"{routing:<14} {len(result.get('warnings', [])):<5} "
                     f"{result['trace_id']:<20} PASS"
                 )
             print("\nNormal: AUTO-D01 selected policy version 2 and produced a cited standard draft.")
@@ -167,8 +187,8 @@ def main():
                 ]
                 for event in selected:
                     print("  " + event_summary(event))
-                print("  fallback route: manual_review")
-            print("RESULT: PASS — bounded retries, predictable fallback, then fail-fast.")
+                print("  result: deferred without an incomplete draft")
+            print("RESULT: PASS — bounded retries, safe deferral, then fail-fast.")
 
             print("\n" + "=" * 72)
             print("STRUCTURED TRACE SAMPLE")
@@ -245,15 +265,10 @@ def main():
                 ).fetchone()[0]
             first_record_id = first["record"]["record_id"]
             replay_record_id = replay.get("record_id")
-            idempotency_passed = (
-                first["status"] == "created"
-                and replay_status == 200
-                and replay_record_id == first_record_id
-                and record_count == 1
-                and replay_count == 1
+            assert_idempotent_replay(
+                first, replay_status, replay_record_id, first_record_id,
+                record_count, replay_count,
             )
-            if not idempotency_passed:
-                raise AssertionError("identical record request was not idempotent")
 
             print("\n" + "=" * 72)
             print("IDEMPOTENCY: IDENTICAL RECORD REQUEST REPLAY")

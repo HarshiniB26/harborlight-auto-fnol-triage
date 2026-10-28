@@ -449,7 +449,7 @@ def main():
                 "SELECT id, case_id, draft_hash, created_at FROM fnol.reviews WHERE status='pending'"
             ).fetchall()
             print(json.dumps(rows, indent=2, default=str))
-        elif args.command == "audit":
+        else:  # audit is the only remaining argparse subcommand.
             rows = database.execute(
                 "SELECT * FROM fnol.audit ORDER BY sequence"
             ).fetchall()
