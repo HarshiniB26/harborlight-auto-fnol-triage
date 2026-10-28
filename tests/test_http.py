@@ -47,7 +47,9 @@ class HttpTests(unittest.TestCase):
         self.assertIn("Export evaluation results", page)
         script = urlopen(self.base + "/static/app.js", timeout=3).read().decode()
         self.assertIn("Approve draft", script)
-        self.assertIn("Create claim record", script)
+        self.assertIn("Approve draft", script)
+        self.assertNotIn("Create claim record", script)
+        self.assertIn("Approved — claim creation pending retry.", script)
         self.assertNotIn("Prepare draft", script)
         self.assertNotIn("Submit for review", script)
         cases = self._json("GET", "/api/cases")["cases"]

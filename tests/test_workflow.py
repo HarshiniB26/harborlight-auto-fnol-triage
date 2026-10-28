@@ -124,8 +124,14 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(approved["review_id"], pending["review_id"])
         self.assertEqual(approved["status"], "approved")
         self.assertEqual(approved["reviewer"], "Taylor Handler")
+        self.assertEqual(
+            approved["record_creation_status"], "created"
+        )
+        self.assertEqual(
+            approved["record_creation"]["status"], "created"
+        )
         created = self.workbench.file_record("AUTO-D01")
-        self.assertEqual(created["status"], "created")
+        self.assertEqual(created["status"], "existing")
         with sqlite3.connect(self.mock_path) as db:
             audit = db.execute(
                 "SELECT detail FROM audit WHERE event='human_approved'"

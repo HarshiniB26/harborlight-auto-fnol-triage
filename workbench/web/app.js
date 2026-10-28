@@ -156,7 +156,7 @@ function renderCase(item) {
       <div class="review-context"><strong>${review ? `Review ${esc(review.review_id)}` : "Review unavailable"}</strong><span>${review && review.reviewer ? `Decided by ${esc(review.reviewer)}` : "Human approval is required before record creation."}</span></div>
       <div class="review-actions">
         ${item.status === "pending" ? `<label class="reviewer-field"><span>Reviewer name</span><input id="reviewer-name" maxlength="80" autocomplete="name" placeholder="Enter your name"></label><button class="button danger secondary" id="reject-review">Reject</button><button class="button" id="approve-review">Approve draft</button>` : ""}
-        ${item.status === "approved" ? `<button class="button" id="create-record">Create claim record</button>` : ""}
+        ${item.status === "approved" ? `<span class="decision-note">Approved — claim creation pending retry.</span>` : ""}
         ${item.status === "rejected" ? `<span class="decision-note rejected">This draft was rejected and remains on file for handler follow-up.</span>` : ""}
         ${item.status === "record_created" ? `<span class="decision-note created">Record ${esc((item.record || {}).record_id)} created</span>` : ""}
         <button class="button secondary compact" id="refresh-case" aria-label="Refresh case">↻</button>
@@ -182,7 +182,7 @@ function renderCase(item) {
     panel.querySelector("#approve-review").addEventListener("click", () => decide("approved"));
     panel.querySelector("#reject-review").addEventListener("click", () => decide("rejected"));
   }
-  if (item.status === "approved") panel.querySelector("#create-record").addEventListener("click", () => act(`/api/cases/${encodeURIComponent(item.case_id)}/record`));
+
 }
 
 async function act(path, payload = null) {

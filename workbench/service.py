@@ -517,6 +517,34 @@ class Workbench:
             decision=decision,
         )
         payload["trace_id"] = trace_id
+
+        # A rejection is terminal: never create a claim.
+        if decision != "approved":
+            return payload
+
+        # Approval has already been persisted by the runtime.
+        # Claim creation is automatic and uses file_record's
+        # stable idempotency key and exact-draft validation.
+        try:
+            filing = self.file_record(case_id, trace_id)
+        except Exception as exc:
+            self.observability.event(
+                "automatic_record_creation_failed",
+                trace_id=trace_id,
+                case_id=case_id,
+                error_type=type(exc).__name__,
+            )
+            filing = {
+                "error": "record_creation_pending",
+                "message": "Approval saved; claim creation requires retry.",
+            }
+
+        payload["record_creation"] = filing
+        payload["record_creation_status"] = (
+            "created"
+            if filing.get("status") in ("created", "replayed", "existing")
+            else "pending_retry"
+        )
         return payload
 
     def file_record(self, case_id, trace_id=None):
