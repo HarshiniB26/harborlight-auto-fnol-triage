@@ -62,6 +62,36 @@ class ReliabilityTests(unittest.TestCase):
         retry = next(row for row in events if row["event"] == "tool_call_retry_scheduled")
         self.assertEqual(retry["backoff_ms"], 110.0)
 
+    def test_transport_exception_retries_then_recovers(self):
+        """A dropped connection should use bounded read retries."""
+
+        attempts = []
+
+        def operation(_case_id, trace_id=None):
+            attempts.append(trace_id)
+
+            if len(attempts) == 1:
+                raise ConnectionError("connection dropped")
+
+            return 200, {"policy_status": "available"}
+
+        result = self.caller.call(
+            "policy",
+            operation,
+            case_id="AUTO-D01",
+            trace_id="tr_connection_test",
+        )
+
+        self.assertEqual(
+            result,
+            {"policy_status": "available"},
+        )
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(
+            self.caller.health()["policy"]["state"],
+            "closed",
+        )
+
     def test_persistent_failure_opens_then_recovers_half_open_circuit(self):
         calls = []
 

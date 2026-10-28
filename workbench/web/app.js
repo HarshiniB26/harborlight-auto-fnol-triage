@@ -150,7 +150,7 @@ function render(item) {
           <article class="card triage">
             <h3>Triage result</h3>
             <p><strong>${esc(route)}</strong></p>
-            <p>${item.status === "record_created" ? "A record is on file for this loss." : "Draft only. When a reviewer approves this exact draft, the record is filed and this page updates on its own."}</p>
+            <p>${item.status === "record_created" ? "A record is on file for this loss." : "Draft only. Human approval automatically creates the FNOL record."}</p>
           </article>
         </div>
         <div>
@@ -172,7 +172,7 @@ function render(item) {
     ` : `<p class="empty">Prepare a draft to see the facts, route, and documents.</p>`}
     ${item.warnings && item.warnings.length ? `<p class="banner">${item.warnings.map(esc).join(" ")}</p>` : ""}
     ${item.record ? `<p class="banner">Record ${esc(item.record.record_id)} is on file for this loss.</p>` : ""}
-    ${item.status === "pending" ? `<p class="banner">This draft is locked until a reviewer approves it outside this app. This page checks every few seconds and shows the record when approval files it.</p><pre class="source-view">${esc(command)}</pre>` : ""}
+    ${item.status === "pending" ? `<p class="banner">This draft is awaiting human approval. Approval automatically creates the FNOL record.</p><pre class="source-view">${esc(command)}</pre>` : ""}
     ${(item.activity || []).length ? `<article class="card"><h3>Case activity</h3><ol class="activity">${item.activity.map((event) => `
       <li><strong>${esc(event.label)}</strong>
         ${event.reviewer ? `<span>Reviewer: ${esc(event.reviewer)}</span>` : ""}
@@ -189,7 +189,7 @@ function render(item) {
   panel.querySelector("#process").addEventListener("click", () => act(`/api/cases/${item.case_id}/process`));
   panel.querySelector("#submit").addEventListener("click", () => act(`/api/cases/${item.case_id}/review`));
   clearInterval(poll);
-  if (item.status === "pending") {
+  if (item.status === "pending" || item.status === "approved") {
     poll = setInterval(() => {
       if (selected === item.case_id) openCase(item.case_id);
     }, 3000);

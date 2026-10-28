@@ -49,7 +49,7 @@ class CircuitBreaker:
 
         with self._lock:
             self.failure_count += 1
-            if self.failure_count >= self.failure_threshold:
+            if self.state == "half_open" or self.failure_count >= self.failure_threshold:
                 self.state = "open"
                 self.opened_at = self.clock()
 
@@ -109,7 +109,10 @@ class ReliableCaller:
             )
             return None
 
-        for attempt in range(1, self.max_attempts + 1):
+        probe = breaker.snapshot()["state"] == "half_open"
+        attempt_limit = 1 if probe else self.max_attempts
+
+        for attempt in range(1, attempt_limit + 1):
             started = self.clock()
             self.observability.metrics.increment("fnol_tool_call_total")
             self.observability.event(
@@ -119,7 +122,15 @@ class ReliableCaller:
                 dependency=dependency,
                 attempt=attempt,
             )
-            status, payload = operation(case_id, trace_id=trace_id)
+            try:
+                status, payload = operation(case_id, trace_id=trace_id)
+            except (ConnectionError, TimeoutError, OSError):
+                # Treat transport failures as dependency unavailability.
+                # Never expose exception details in logs or UI.
+                status, payload = 503, {
+                    "error": "transport_unavailable"
+                }
+
             duration_ms = (self.clock() - started) * 1000
             if status == 200 and isinstance(payload, dict):
                 breaker.success()
@@ -134,7 +145,30 @@ class ReliableCaller:
                 )
                 return payload
 
-            retryable = status == 503
+            retryable = status in (502, 503, 504)
+
+            if status == 429:
+                # The upstream service has rate-limited this client.
+                # Do not send immediate retries.
+                self.observability.metrics.increment(
+                    "fnol_tool_rate_limited_total"
+                )
+                self.observability.event(
+                    "tool_call_rate_limited",
+                    level="WARNING",
+                    trace_id=trace_id,
+                    case_id=case_id,
+                    dependency=dependency,
+                    attempt=attempt,
+                )
+
+                # Rate limiting does not mean the server is unhealthy.
+                # However, a half-open recovery probe must be released.
+                if probe:
+                    breaker.failure()
+
+                return None
+
             self.observability.metrics.increment("fnol_tool_failure_total")
             self.observability.event(
                 "tool_call_failed",
@@ -147,9 +181,7 @@ class ReliableCaller:
                 retryable=retryable,
                 duration_ms=round(duration_ms, 3),
             )
-            if not retryable:
-                return None
-            if attempt == self.max_attempts:
+            if not retryable or attempt == attempt_limit:
                 breaker.failure()
                 if breaker.snapshot()["state"] == "open":
                     self.observability.metrics.increment("fnol_circuit_open_total")

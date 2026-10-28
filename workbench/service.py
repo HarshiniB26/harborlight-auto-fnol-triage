@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .client import MockClient
+from .state_repository import JsonStateRepository
 from .draft import build_draft
 from .observability import Observability
 from .reliability import ReliableCaller
@@ -64,6 +65,7 @@ class Workbench:
         self.client = MockClient(api_url)
         self.data_dir = Path(data_dir)
         self.state_path = Path(state_path)
+        self.state_repository = JsonStateRepository(self.state_path)
         self._lock = threading.Lock()
         self.observability = observability or Observability()
         self.reliable_caller = reliable_caller or ReliableCaller(self.observability)
@@ -76,8 +78,6 @@ class Workbench:
         listed = []
         for case in self.client.list_cases():
             case_id = case["case_id"]
-            self._file_if_approved(case_id)
-            state = self._read()
             entry = state.get(case_id) or {}
             draft = entry.get("draft") if isinstance(entry.get("draft"), dict) else None
             summary = {
@@ -350,7 +350,6 @@ class Workbench:
         self._check_id(case_id)
         trace_id = trace_id or "tr_" + uuid.uuid4().hex[:16]
         case = self._find(case_id, trace_id)
-        self._file_if_approved(case_id, trace_id)
         state = self._read()
         entry = state.get(case_id) or {}
         review = self._live_review(entry, trace_id)
@@ -456,19 +455,6 @@ class Workbench:
             "status": row.get("status") or "created",
         }
 
-    def _file_if_approved(self, case_id, trace_id=None):
-        """File the exact draft once a reviewer has approved it outside the app."""
-
-        entry = self._read().get(case_id) or {}
-        if not entry.get("draft") or not entry.get("review_id"):
-            return None
-        if self._live_record(case_id, trace_id):
-            return None
-        review = self._live_review(entry, trace_id)
-        if not review or review.get("status") != "approved":
-            return None
-        return self.file_record(case_id, trace_id)
-
     def _status(self, case_id, state):
         """Derive the handler-facing lifecycle status in precedence order."""
 
@@ -482,32 +468,14 @@ class Workbench:
         return "new"
 
     def _read(self):
-        """Read only current flat case entries from generated workbench state.
+        """Load workflow state through the persistence repository."""
 
-        Earlier prototypes stored data below a top-level ``cases`` object. That
-        obsolete shape is ignored and disappears the next time state is saved.
-        """
-
-        if not self.state_path.is_file():
-            return {}
-        stored = json.loads(self.state_path.read_text())
-        if not isinstance(stored, dict):
-            return {}
-        return {
-            case_id: entry
-            for case_id, entry in stored.items()
-            if case_id != "cases"
-            and isinstance(entry, dict)
-            and isinstance(entry.get("draft"), dict)
-        }
+        return self.state_repository.load()
 
     def _write(self, state):
-        """Atomically persist generated drafts, review IDs, and request keys."""
+        """Save workflow state through the persistence repository."""
 
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
-        temporary.write_text(json.dumps(state, indent=2))
-        temporary.replace(self.state_path)
+        self.state_repository.save(state)
 
     @staticmethod
     def _check_id(value):

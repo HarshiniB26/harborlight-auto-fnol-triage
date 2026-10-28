@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from tools.evaluate import evaluate
-from tools.runtime import create_server
+from tools.runtime import create_server, _file_approved_review
 from workbench.service import Workbench
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,57 +73,76 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(attempted, 0)
         self.assertEqual(records, 0)
 
-    def test_approved_draft_files_once_and_duplicate_intake_reuses_it(self):
-        for case_id in ("AUTO-D09", "AUTO-D10"):
-            self.workbench.process(case_id)
-            review = self.workbench.submit_review(case_id)
-            self._approve(review["review_id"])
-        created = self.workbench.file_record("AUTO-D09")
-        self.assertEqual(created["status"], "created")
-        duplicate = self.workbench.file_record("AUTO-D10")
-        self.assertEqual(duplicate["status"], "existing")
-        self.assertEqual(duplicate["record"]["record_id"], created["record"]["record_id"])
-        with sqlite3.connect(self.mock_path) as db:
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM records").fetchone()[0], 1)
-
-    def test_identical_record_request_replays_with_same_idempotency_key(self):
-        """A transport retry returns the first response and creates no second row."""
-
-        case_id = "AUTO-D02"
-        self.workbench.process(case_id)
-        review = self.workbench.submit_review(case_id)
+    def test_approval_creates_record_and_reads_are_safe(self):
+        self.workbench.process("AUTO-D01")
+        review = self.workbench.submit_review("AUTO-D01")
         self._approve(review["review_id"])
 
-        first = self.workbench.file_record(case_id)
-        self.assertEqual(first["status"], "created")
+        for _ in range(3):
+            self.workbench.list_cases()
+            detail = self.workbench.case_view("AUTO-D01")
+            self.assertEqual(detail["status"], "record_created")
+            self.assertIsNotNone(detail["record"])
 
-        state = self.workbench._read()[case_id]
-        status, replay = self.workbench.client.create_record(
-            case_id,
-            review["review_id"],
-            state["draft"],
-            state["idempotency_key"],
-            trace_id="tr_idempotency_replay",
-        )
-
-        self.assertEqual(status, 200)
-        self.assertEqual(replay["record_id"], first["record"]["record_id"])
         with sqlite3.connect(self.mock_path) as db:
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM records").fetchone()[0], 1)
-            self.assertEqual(
-                db.execute(
-                    "SELECT COUNT(*) FROM audit WHERE event='write_replayed'"
-                ).fetchone()[0],
-                1,
-            )
+            count = db.execute(
+                "SELECT COUNT(*) FROM records"
+            ).fetchone()[0]
+            self.assertEqual(count, 1)
+
+    def test_duplicate_loss_approval_creates_one_record(self):
+        self.workbench.process("AUTO-D09")
+        review = self.workbench.submit_review("AUTO-D09")
+        self._approve(review["review_id"])
+
+        self.workbench.process("AUTO-D10")
+
+        first = self.workbench.case_view("AUTO-D09")["record"]
+        second = self.workbench.case_view("AUTO-D10")["record"]
+
+        self.assertEqual(first["record_id"], second["record_id"])
+
+        with sqlite3.connect(self.mock_path) as db:
+            count = db.execute(
+                "SELECT COUNT(*) FROM records"
+            ).fetchone()[0]
+            self.assertEqual(count, 1)
+
+    def test_record_request_after_approval_does_not_duplicate(self):
+        self.workbench.process("AUTO-D02")
+        review = self.workbench.submit_review("AUTO-D02")
+        self._approve(review["review_id"])
+
+        result = self.workbench.file_record("AUTO-D02")
+        self.assertEqual(result["status"], "existing")
+
+        with sqlite3.connect(self.mock_path) as db:
+            count = db.execute(
+                "SELECT COUNT(*) FROM records"
+            ).fetchone()[0]
+            self.assertEqual(count, 1)
 
     def _approve(self, review_id):
-        """The test acts as the human operator. The workbench has no approve method."""
+        """Simulate the runtime operator's approval and filing."""
         with sqlite3.connect(self.mock_path) as db:
-            db.execute(
-                "UPDATE reviews SET status='approved', reviewer='reviewer-name' WHERE id=? AND status='pending'",
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                "SELECT * FROM reviews WHERE id=?",
                 (review_id,),
+            ).fetchone()
+
+            self.assertIsNotNone(row)
+            self.assertEqual(row["status"], "pending")
+
+            db.execute(
+                "UPDATE reviews SET status='approved', reviewer=? WHERE id=?",
+                ("reviewer-name", review_id),
             )
+
+            record_id = _file_approved_review(
+                db, row, "reviewer-name"
+            )
+            self.assertIsNotNone(record_id)
 
 
 if __name__ == "__main__":

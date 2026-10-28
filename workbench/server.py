@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .service import Workbench
+from .state_lock import acquire_state_lock
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = Path(__file__).resolve().parent / "web"
@@ -141,6 +142,7 @@ def main():
     args = parser.parse_args()
     if bool(args.tls_cert) != bool(args.tls_key):
         parser.error("--tls-cert and --tls-key must be set together")
+    state_lock = acquire_state_lock(args.state)
     workbench = Workbench(args.api, args.data, args.state)
     server = create_server(workbench, args.host, args.port)
     if args.tls_cert:
@@ -160,6 +162,7 @@ def main():
         pass
     finally:
         server.server_close()
+        state_lock.close()
 
 
 if __name__ == "__main__":
