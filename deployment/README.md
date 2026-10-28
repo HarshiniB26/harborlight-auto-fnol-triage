@@ -23,6 +23,29 @@ submitted as pending reviews. Later events refresh the runtime's S3 dataset and
 prepare only IDs absent from the durable handled-case checkpoint. Successful
 events are deleted; technical failures retry and eventually reach the DLQ.
 
+The queue processor handles one case at a time using the same deterministic
+workflow as an interactive request: load evidence, call policy and claims,
+reconcile facts, select the incident-time policy, apply routing rules, generate
+citations, save the draft, and submit the exact draft for human review. It never
+approves a draft or creates a record automatically.
+
+Successfully handled case IDs are checkpointed in PostgreSQL. A hard technical
+exception is not checkpointed and prevents the SQS message from being deleted,
+so it is retried. A persistent policy or claims outage produces the existing
+safe `manual_review` fallback after bounded retries; it never produces a
+coverage, payment, denial, fraud, or liability decision.
+
+## Data ownership
+
+| Data | AWS service | Notes |
+|---|---|---|
+| Dataset, documents and policy wording | S3 | Private source evidence |
+| Drafts, reviews, records, idempotency, audit and checkpoints | RDS PostgreSQL | Durable mutable workflow state |
+| Dataset-change events | SQS and DLQ | Notifications only, not claim bodies |
+| Application image | ECR | Immutable ARM64 releases |
+| Database credentials | Secrets Manager | Injected at runtime |
+| Logs, metrics and alarms | CloudWatch | Operational evidence and diagnosis |
+
 ## Prerequisites
 
 - Docker Desktop running
@@ -34,6 +57,22 @@ events are deleted; technical failures retry and eventually reach the DLQ.
 aws sso login --profile auto-fnol-admin
 aws sts get-caller-identity --profile auto-fnol-admin
 ```
+
+Each teammate must configure and use their own Coforge SSO identity. For the
+current shared sandbox, `aws configure sso` uses:
+
+```text
+SSO start URL: https://identitycenter.amazonaws.com/ssoins-7223ae9684bca5e9
+SSO region: us-east-1
+AWS account: 104005345381
+Role: AWSAdministratorAccess
+Default region: us-east-1
+Output format: json
+Profile name: auto-fnol-admin
+```
+
+The profile name is local and may differ. Never share access keys, temporary
+credentials, or another teammate's SSO cache.
 
 ## Deploy
 
@@ -76,6 +115,17 @@ Keep that terminal open and browse to `http://127.0.0.1:18080`. No load
 balancer, public application URL, public task IP, or inbound security-group
 rule is created.
 
+If the tunnel reports an expired SSO token, run:
+
+```sh
+aws sso login --profile auto-fnol-admin
+./deployment/start-tunnel.sh
+```
+
+If token refresh still fails, run `aws sso logout`, log in again, and restart
+the tunnel. A `broken pipe` indicates that the laptop-to-AWS HTTPS tunnel was
+interrupted; it does not remove the Fargate service or database.
+
 ## Handler workflow
 
 The automatic queue job submits drafts before the handler opens the UI. Under
@@ -103,6 +153,11 @@ In AWS, verify that the stack is complete, the ECS service has one running
 task, RDS is not publicly accessible, S3 Block Public Access is enabled, the
 SQS queue is empty after intake, the DLQ is empty, and the CloudWatch log group
 contains `runtime`, `workbench`, and `migration` streams.
+
+CloudWatch also contains Container Insights plus alarms for processing
+failures, opened circuit breakers, old SQS messages, and visible DLQ messages.
+The current pilot alarms change state in the AWS console but do not send a
+notification because no SNS action is configured.
 
 ## Update and cleanup
 

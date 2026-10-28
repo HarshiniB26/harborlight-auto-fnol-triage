@@ -13,6 +13,10 @@ fictional training data.
 - Deterministic extraction, policy-period selection, conflict detection, and
   routing (`standard`, `urgent`, `specialist`, or `manual_review`).
 - Exact source citations and output matching `docs/OUTPUT_CONTRACT.md`.
+- Sequential batch preparation: the supplied 12-case dataset is prepared once,
+  and later dataset changes process only newly discovered case IDs.
+- Durable S3-to-SQS ingestion with retry, a dead-letter queue, and a PostgreSQL
+  checkpoint so events and cases are not silently lost during restarts.
 - A hard human boundary: processing cannot approve a draft; a named person must
   explicitly approve or reject the exact draft, and a changed draft needs review.
 - Retries with exponential backoff, circuit breakers, and idempotent writes.
@@ -22,24 +26,85 @@ fictional training data.
 ## Application flow
 
 ```text
-Browser UI (port 8080)
+dataset.json and evidence
         |
         v
-workbench backend
+supplied Runtime API
         |
-        +--> supplied runtime APIs (port 8767)
-        |       cases, policy, claims, reviews, records
+        v
+sequential Workbench processing
         |
-        +--> deterministic rules and cited draft
+        +--> retrieve intake, policy and claims data
+        +--> reconcile facts and select incident-time policy
+        +--> apply deterministic routing and guardrails
+        +--> generate an exact cited draft
+        +--> submit the unchanged draft to Pending Review
         |
-        +--> explicit named human decision in the private UI
+        v
+claims-handler UI
         |
-        +--> approved, idempotent mock record
+        +--> named human approves or rejects
+        |
+        +--> approved unchanged draft may create one mock record
 ```
 
 The supplied runtime is an external dependency simulator. `workbench/server.py`
 is our browser-facing backend; having both does not mean the frontend calls two
 backends. The browser calls only the workbench.
+
+## Batch processing and new cases
+
+This is application-level sequential processing, not AWS Batch. The Workbench
+uses the same deterministic `process()` workflow for every case, one case at a
+time, which keeps dependency load predictable and makes the audit trail easy to
+follow.
+
+### Initial 12-case bootstrap
+
+On the first AWS deployment:
+
+1. `deployment/deploy.sh` uploads documents and policies to S3, then uploads
+   `dataset.json` last.
+2. The S3 `ObjectCreated` event is placed in SQS and remains there while the
+   Fargate service starts.
+3. The Workbench long-polls SQS, receives the event, and asks the Runtime API
+   for a fresh list of cases.
+4. The PostgreSQL checkpoint is initially empty, so all 12 case IDs are new.
+5. Each case is processed sequentially and its exact generated draft is
+   submitted to the pending human-review queue.
+6. Successfully handled IDs are added to the durable checkpoint. The handler
+   opens the UI to already-prepared drafts; no preparation button is required.
+
+### Later dataset updates
+
+When a future `dataset.json` is uploaded, S3 sends another notification to SQS.
+The Workbench refreshes the Runtime API, compares current case IDs with the
+PostgreSQL checkpoint, and processes only newly added IDs. SQS stores the
+notification, not the claim data itself.
+
+```text
+S3 dataset update
+      |
+      v
+SQS notification ---- retry ----> dead-letter queue after repeated failures
+      |
+      v
+refresh Runtime case list
+      |
+      v
+current IDs - checkpoint IDs
+      |
+      v
+process only new cases sequentially
+```
+
+Transient policy or claims failures receive up to three attempts. If a
+dependency remains unavailable, the deterministic safe fallback routes the
+draft to `manual_review` and identifies the unavailable service; it never makes
+a coverage or payment decision. A hard technical exception leaves that case
+outside the checkpoint and leaves the SQS message unacknowledged so it can be
+retried. Successfully processed cases are checkpointed even when another case
+in the same event fails.
 
 ## Project structure
 
@@ -52,6 +117,8 @@ workbench/
   draft.py           output-contract draft and exact citations
   reliability.py     retries, backoff, and circuit breakers
   observability.py   safe JSON logging, tracing, and metrics
+  dataset_diff_poller.py
+                     SQS long poll and dataset-change coordination
   web/               HTML, CSS, and JavaScript UI
 
 tests/               rule, workflow, HTTP, and hardening tests
@@ -172,6 +239,66 @@ keys, counters, audit events, generated workbench state, and the handled-case
 checkpoint. Container logs go to CloudWatch. Local file-backed mode remains
 available for development and testing.
 
+### AWS architecture
+
+```text
+Handler laptop
+  |
+  | Coforge SSO + encrypted SSM port-forward
+  v
+Private ECS Fargate service (desired count 1, no public IP)
+  +-- fnol-workbench container :8080
+  |     +-- handler UI/API
+  |     +-- sequential queue processor
+  |     `-- SQS long poller
+  |
+  `-- fnol-runtime container :8767
+        `-- supplied /v1 enterprise simulator
+             (same-task communication over 127.0.0.1)
+
+Private S3 bucket
+  +-- dataset.json
+  +-- intake/estimate/report documents
+  `-- policy wording and endorsements
+        |
+        `-- ObjectCreated(dataset.json) --> SQS --> Workbench
+                                           `-----> DLQ on repeated failure
+
+Private RDS PostgreSQL
+  +-- drafts and review decisions
+  +-- created mock records
+  +-- idempotency responses
+  +-- audit/workbench state
+  `-- processed-case checkpoint
+
+CloudWatch
+  +-- Runtime, Workbench and migration logs
+  +-- ECS Container Insights
+  `-- processing, circuit-breaker, queue-age and DLQ alarms
+
+Private subnet outbound path: Fargate --> NAT Gateway --> Internet Gateway
+This is outbound-only access to AWS service endpoints; it does not expose the
+application publicly.
+```
+
+The one Fargate task intentionally contains both application containers because
+they share a lifecycle and communicate privately over task localhost. ECS
+replaces the task if an essential container fails. Desired count `1` is a
+cost-conscious pilot choice and may cause brief downtime during replacement;
+production high availability would use two or more web tasks and separate the
+single sequential intake worker.
+
+### Where data is stored
+
+| Data | Store | Purpose |
+|---|---|---|
+| Dataset, documents and policy wording | Private S3 | Immutable/source evidence |
+| Reviews, records, idempotency and audit state | Private RDS PostgreSQL | Durable multi-handler workflow state |
+| Dataset-change notification | SQS | Reliable buffering and retry; not claim storage |
+| Container output and operational metrics | CloudWatch | Diagnosis, dashboards and alarms |
+| Container image | ECR | Immutable application releases |
+| Database credentials | Secrets Manager | Runtime secret retrieval without hard-coding |
+
 ```sh
 aws sso login --profile auto-fnol-admin
 aws sts get-caller-identity --profile auto-fnol-admin
@@ -214,6 +341,39 @@ export STACK_NAME=auto-fnol-team1
 Keep the tunnel terminal open and visit `http://127.0.0.1:18080`. Multiple
 handlers can each run their own local tunnel to the same deployed application
 and PostgreSQL state. Press `Ctrl+C` in the tunnel terminal when finished.
+
+If the tunnel reports that the SSO token expired, refresh the personal session
+and start it again:
+
+```sh
+aws sso login --profile auto-fnol-admin
+./deployment/start-tunnel.sh
+```
+
+If AWS cannot refresh the cached token, clear the local SSO sessions first:
+
+```sh
+aws sso logout
+aws sso login --profile auto-fnol-admin
+./deployment/start-tunnel.sh
+```
+
+A tunnel `broken pipe` means the laptop-to-AWS HTTPS session was interrupted;
+it does not mean Fargate or PostgreSQL was deleted. Reauthenticate if necessary
+and rerun the tunnel script.
+
+### Deployment lifecycle and operations
+
+`deployment/deploy.sh` updates the CloudFormation infrastructure, builds one
+immutable ARM64 image, pushes it to ECR, registers the task definitions,
+uploads evidence, runs the PostgreSQL migration as a one-off Fargate task, and
+then starts the private service. Rerunning it publishes a new image and replaces
+the service task while preserving RDS and S3 data.
+
+CloudWatch alarms currently record operational state in the AWS console; they
+do not notify a developer because no SNS action is configured. For production,
+attach an SNS topic and the client's approved email, chat, or incident-management
+integration.
 
 The deployment is defined as code in `deployment/cloudformation.yaml`; the
 database schema is in `deployment/schema.sql`. Complete deployment, access,
