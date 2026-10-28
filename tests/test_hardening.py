@@ -142,13 +142,16 @@ class HardenedWorkflowTests(unittest.TestCase):
         third = self.workbench.process("AUTO-D07", "tr_outage_three")
         for result in (first, second, third):
             self.assertEqual(
-                result["error"],
-                "dependency_unavailable",
+                result["draft"]["routing"],
+                "manual_review",
             )
-            self.assertNotIn("draft", result)
+            self.assertEqual(
+                result["draft"]["classification"],
+                "collision",
+            )
 
-        # Technical outages must not create incomplete drafts.
-        self.assertNotIn(
+        # The unavailable claims evidence is explicitly flagged for review.
+        self.assertIn(
             "AUTO-D07",
             self.workbench.state_store.read(),
         )

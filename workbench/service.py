@@ -328,7 +328,8 @@ class Workbench:
                         trace_id=trace_id,
                     )
                 )
-                # Do not create drafts when required APIs fail.
+                # Unavailable evidence must not be treated as empty evidence.
+                # The deterministic rules route these cases to manual_review.
                 unavailable = [
                     name
                     for name, value in (
@@ -345,15 +346,6 @@ class Workbench:
                         case_id=case_id,
                         dependencies=unavailable,
                     )
-                    return {
-                        "error": "dependency_unavailable",
-                        "message": (
-                            "Required insurance API unavailable; "
-                            "case deferred for retry."
-                        ),
-                        "dependencies": unavailable,
-                        "trace_id": trace_id,
-                    }
 
                 self.observability.event(
                     "evidence_retrieval_completed",
