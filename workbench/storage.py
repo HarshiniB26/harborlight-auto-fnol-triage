@@ -125,6 +125,9 @@ class JsonStateStore:
         temporary.replace(self.path)
 
 
+QUEUE_META_KEY = "fnol-queue-meta"
+
+
 class PostgresStateStore:
     """Persist shared workflow state in Amazon RDS PostgreSQL."""
 
@@ -155,5 +158,20 @@ class PostgresStateStore:
                     SET entry = EXCLUDED.entry, updated_at = EXCLUDED.updated_at
                     """,
                     (case_id, json.dumps(entry)),
+                )
+
+    def delete_cases(self, case_ids):
+        """Remove workbench UI state rows for case IDs no longer in the queue."""
+
+        ids = [case_id for case_id in case_ids if isinstance(case_id, str)]
+        if not ids:
+            return
+        import psycopg
+
+        with psycopg.connect(self.database_url) as connection:
+            for case_id in ids:
+                connection.execute(
+                    "DELETE FROM fnol.workbench_state WHERE case_id = %s",
+                    (case_id,),
                 )
 

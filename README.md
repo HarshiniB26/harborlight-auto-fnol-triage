@@ -118,7 +118,21 @@ uv run --with pytest --with pytest-cov python -m pytest tests/ \
   --cov=workbench --cov-report=term-missing --cov-fail-under=98
 ```
 
-The current suite contains 38 tests and covers 99% of the `workbench` package.
+The current suite contains 45 tests and covers 99% of the `workbench` package.
+
+Prepare the full queue (or selected cases) in one on-demand batch — each case
+still uses single-case `process` + `submit_review` under the hood:
+
+```sh
+uv run --locked python tools/batch_prepare.py
+uv run --locked python tools/batch_prepare.py --case-id AUTO-D01 --case-id AUTO-D02
+```
+
+On AWS, uploading `dataset.json` to the evidence bucket emits an S3
+`ObjectCreated` notification to SQS. When `DATASET_DIFF_QUEUE_URL` is set, the
+workbench process long-polls that queue and prepares **only newly added** case
+IDs (cursor in Postgres `fnol-queue-meta`). There is no second always-on worker
+task. See `docs/architecture/batch-processing.md`.
 
 After preparing all cases, export and evaluate the exact submission array:
 

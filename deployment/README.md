@@ -53,10 +53,13 @@ The script performs these real operations:
 2. Builds one immutable Docker image.
 3. Pushes that image to the stack's private ECR repository.
 4. Waits for the private EC2 instance to become available through SSM.
-5. Uploads `data/dev/dataset.json` unchanged to the private S3 bucket.
+5. Uploads `data/dev/dataset.json` unchanged to the private S3 bucket
+   (S3 `ObjectCreated` notifies the dataset-diff SQS queue).
 6. Uploads the referenced documents and policy wording to that bucket.
 7. Creates the mutable PostgreSQL schema from `deployment/schema.sql`.
-8. Starts the S3-input/RDS-state `/v1` runtime and AWS-backed workbench.
+8. Starts the S3-input/RDS-state `/v1` runtime and AWS-backed workbench
+   with `DATASET_DIFF_QUEUE_URL` so the workbench co-located poller can
+   prepare newly added case IDs (see `docs/architecture/batch-processing.md`).
 9. Sends container output to CloudWatch Logs.
 10. Checks the runtime health and workbench readiness endpoints.
 

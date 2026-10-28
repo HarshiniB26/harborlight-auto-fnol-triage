@@ -12,7 +12,7 @@ from .client import MockClient
 from .draft import build_draft
 from .observability import Observability
 from .reliability import ReliableCaller
-from .storage import JsonStateStore, LocalEvidenceStore
+from .storage import QUEUE_META_KEY, JsonStateStore, LocalEvidenceStore, PostgresStateStore
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 
@@ -69,6 +69,7 @@ class Workbench:
         self.state_path = Path(state_path)
         self.evidence_store = evidence_store or LocalEvidenceStore(self.data_dir)
         self.state_store = state_store or JsonStateStore(self.state_path)
+        self.supports_queue_cursor = isinstance(self.state_store, PostgresStateStore)
         self._lock = threading.Lock()
         self.observability = observability or Observability()
         self.reliable_caller = reliable_caller or ReliableCaller(self.observability)
@@ -134,7 +135,177 @@ class Workbench:
             }
         return [state[case_id]["draft"] for case_id in requested]
 
-    def process(self, case_id, trace_id=None):
+    def prepare_queue(self, trace_id=None, case_ids=None):
+        """Process and submit reviews for many cases with shared tracing.
+
+        Batch mode refuses tool-starved drafts (``require_dependencies=True``).
+        When a Postgres state store is configured, successfully handled IDs are
+        merged into the AWS-only ``last_seen`` cursor.
+        """
+
+        trace_id = trace_id or "tr_" + uuid.uuid4().hex[:16]
+        try:
+            if case_ids is None:
+                targets = [case["case_id"] for case in self.client.list_cases(trace_id)]
+            else:
+                if not isinstance(case_ids, list) or any(
+                    not isinstance(item, str) for item in case_ids
+                ):
+                    return {
+                        "error": "invalid_case_ids",
+                        "message": "case_ids must be an array of strings.",
+                        "trace_id": trace_id,
+                    }
+                targets = list(case_ids)
+        except RuntimeError as error:
+            self.observability.event(
+                "queue_prepare_failed",
+                level="ERROR",
+                trace_id=trace_id,
+                error_type=type(error).__name__,
+            )
+            raise
+
+        self.observability.event(
+            "queue_prepare_started",
+            trace_id=trace_id,
+            case_count=len(targets),
+        )
+        cases = []
+        handled = []
+        hard_failures = 0
+        for case_id in targets:
+            row = {"case_id": case_id}
+            try:
+                processed = self.process(
+                    case_id, trace_id, require_dependencies=True
+                )
+            except Exception as error:
+                hard_failures += 1
+                row["error"] = "processing_failed"
+                row["message"] = str(error) or type(error).__name__
+                cases.append(row)
+                continue
+            row["process"] = processed
+            if processed.get("error") == "draft_locked":
+                handled.append(case_id)
+                cases.append(row)
+                continue
+            if processed.get("error"):
+                hard_failures += 1
+                row["error"] = processed.get("error")
+                row["message"] = processed.get("message")
+                cases.append(row)
+                continue
+            try:
+                review = self.submit_review(case_id, trace_id)
+            except Exception as error:
+                hard_failures += 1
+                row["error"] = "review_failed"
+                row["message"] = str(error) or type(error).__name__
+                cases.append(row)
+                continue
+            row["review"] = review
+            if isinstance(review, dict) and review.get("error"):
+                hard_failures += 1
+                row["error"] = review.get("error")
+                row["message"] = review.get("message")
+            else:
+                handled.append(case_id)
+            cases.append(row)
+
+        if self.supports_queue_cursor and handled:
+            self._merge_last_seen(handled)
+
+        status = "completed" if hard_failures == 0 else "completed_with_errors"
+        self.observability.event(
+            "queue_prepare_completed",
+            trace_id=trace_id,
+            status=status,
+            case_count=len(targets),
+            handled_count=len(handled),
+            error_count=hard_failures,
+        )
+        return {
+            "status": status,
+            "trace_id": trace_id,
+            "handled_case_ids": handled,
+            "cases": cases,
+        }
+
+    def apply_dataset_diff(self, current_ids, trace_id=None):
+        """Prepare only newly added case IDs using the AWS last_seen cursor."""
+
+        if not self.supports_queue_cursor:
+            return {
+                "error": "cursor_unavailable",
+                "message": "Dataset diff requires the AWS Postgres state store.",
+                "trace_id": trace_id or "tr_" + uuid.uuid4().hex[:16],
+            }
+        trace_id = trace_id or "tr_" + uuid.uuid4().hex[:16]
+        if not isinstance(current_ids, (list, set, tuple)):
+            return {
+                "error": "invalid_current_ids",
+                "message": "current_ids must be a collection of case ID strings.",
+                "trace_id": trace_id,
+                "ack": False,
+            }
+        current = {case_id for case_id in current_ids if isinstance(case_id, str)}
+        last_seen = self._read_last_seen()
+        added = sorted(current - last_seen)
+        removed = sorted(last_seen - current)
+        self.observability.event(
+            "dataset_diff_started",
+            trace_id=trace_id,
+            current_count=len(current),
+            added_count=len(added),
+            removed_count=len(removed),
+        )
+        prepare = {"status": "completed", "handled_case_ids": [], "cases": []}
+        if added:
+            prepare = self.prepare_queue(trace_id=trace_id, case_ids=added)
+
+        handled_added = [
+            case_id
+            for case_id in (prepare.get("handled_case_ids") or [])
+            if case_id in set(added)
+        ]
+        # prepare_queue merges handled into the cursor; drop removals afterward.
+        if removed:
+            self._write_last_seen(self._read_last_seen() - set(removed))
+            if hasattr(self.state_store, "delete_cases"):
+                self.state_store.delete_cases(removed)
+
+        deferred_or_failed = [
+            case_id for case_id in added if case_id not in set(handled_added)
+        ]
+        all_adds_failed = bool(added) and not handled_added
+        ack = not all_adds_failed
+        status = prepare.get("status") or "completed"
+        if deferred_or_failed and status == "completed":
+            status = "completed_with_errors"
+        self.observability.event(
+            "dataset_diff_completed",
+            trace_id=trace_id,
+            status=status,
+            added_count=len(added),
+            removed_count=len(removed),
+            handled_count=len(handled_added),
+            deferred_count=len(deferred_or_failed),
+            ack=ack,
+        )
+        return {
+            "status": status,
+            "trace_id": trace_id,
+            "added_case_ids": added,
+            "removed_case_ids": removed,
+            "handled_case_ids": handled_added,
+            "deferred_case_ids": deferred_or_failed,
+            "prepare": prepare,
+            "ack": ack,
+        }
+
+    def process(self, case_id, trace_id=None, *, require_dependencies=False):
         """Retrieve evidence and build a new deterministic draft for one case."""
 
         trace_id = trace_id or "tr_" + uuid.uuid4().hex[:16]
@@ -157,6 +328,24 @@ class Workbench:
                         "draft": entry.get("draft"),
                         "trace_id": trace_id,
                     }
+                if require_dependencies:
+                    circuits = self.reliable_caller.health()
+                    if any(
+                        circuits.get(name, {}).get("state") == "open"
+                        for name in ("policy", "claims")
+                    ):
+                        self.observability.event(
+                            "processing_deferred_dependency",
+                            level="WARNING",
+                            trace_id=trace_id,
+                            case_id=case_id,
+                            reason="circuit_open",
+                        )
+                        return {
+                            "error": "dependency_unavailable",
+                            "message": "Policy or claims dependency circuit is open.",
+                            "trace_id": trace_id,
+                        }
                 documents = self._documents(case.get("documents") or [])
                 self.observability.event(
                     "evidence_documents_loaded",
@@ -188,6 +377,23 @@ class Workbench:
                     policy_available=isinstance(policy, dict),
                     claims_available=isinstance(claims, dict),
                 )
+                if require_dependencies and (
+                    not isinstance(policy, dict) or not isinstance(claims, dict)
+                ):
+                    self.observability.event(
+                        "processing_deferred_dependency",
+                        level="WARNING",
+                        trace_id=trace_id,
+                        case_id=case_id,
+                        reason="tool_unavailable",
+                        policy_available=isinstance(policy, dict),
+                        claims_available=isinstance(claims, dict),
+                    )
+                    return {
+                        "error": "dependency_unavailable",
+                        "message": "Policy or claims evidence was unavailable after retries.",
+                        "trace_id": trace_id,
+                    }
                 draft, warnings = build_draft(
                     case,
                     documents,
@@ -526,14 +732,59 @@ class Workbench:
 
         Earlier prototypes stored data below a top-level ``cases`` object. That
         obsolete shape is ignored and disappears the next time state is saved.
+        Queue cursor meta is excluded from case workflow reads.
         """
 
-        return self.state_store.read()
+        state = self.state_store.read()
+        return {
+            case_id: entry
+            for case_id, entry in state.items()
+            if case_id != QUEUE_META_KEY
+        }
 
     def _write(self, state):
         """Atomically persist generated drafts, review IDs, and request keys."""
 
         self.state_store.write(state)
+
+    def _read_last_seen(self):
+        """Return the AWS dataset-diff cursor of handled case IDs."""
+
+        if not self.supports_queue_cursor:
+            return set()
+        with self._lock:
+            entry = self.state_store.read().get(QUEUE_META_KEY) or {}
+            ids = entry.get("last_seen_case_ids") or []
+            if not isinstance(ids, list):
+                return set()
+            return {case_id for case_id in ids if isinstance(case_id, str)}
+
+    def _write_last_seen(self, case_ids):
+        """Persist the AWS dataset-diff cursor."""
+
+        if not self.supports_queue_cursor:
+            return
+        with self._lock:
+            self.state_store.write({
+                QUEUE_META_KEY: {
+                    "last_seen_case_ids": sorted(set(case_ids)),
+                }
+            })
+
+    def _merge_last_seen(self, case_ids):
+        """Union handled case IDs into the AWS dataset-diff cursor."""
+
+        if not self.supports_queue_cursor or not case_ids:
+            return
+        with self._lock:
+            current = self.state_store.read().get(QUEUE_META_KEY) or {}
+            existing = current.get("last_seen_case_ids") or []
+            if not isinstance(existing, list):
+                existing = []
+            merged = sorted(set(existing) | set(case_ids))
+            self.state_store.write({
+                QUEUE_META_KEY: {"last_seen_case_ids": merged}
+            })
 
     @staticmethod
     def _check_id(value):

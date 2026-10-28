@@ -39,6 +39,7 @@ REPOSITORY_URI="$(output RepositoryUri)"
 MASTER_SECRET_ARN="$(output DatabaseSecretArn)"
 APP_SECRET_ARN="$(output ApplicationDatabaseSecretArn)"
 LOG_GROUP="$(output LogGroupName)"
+DATASET_DIFF_QUEUE_URL="$(output DatasetDiffQueueUrl)"
 IMAGE_URI="${REPOSITORY_URI}:${IMAGE_TAG}"
 REGISTRY="${REPOSITORY_URI%/*}"
 
@@ -78,7 +79,7 @@ fi
 echo "5/6 Initializing mutable PostgreSQL state and starting private services..."
 PARAMETERS_FILE="$(mktemp)"
 trap 'rm -f "$PARAMETERS_FILE"' EXIT
-export AWS_REGION INSTANCE_ID BUCKET REPOSITORY_URI MASTER_SECRET_ARN APP_SECRET_ARN LOG_GROUP IMAGE_URI REGISTRY
+export AWS_REGION INSTANCE_ID BUCKET REPOSITORY_URI MASTER_SECRET_ARN APP_SECRET_ARN LOG_GROUP IMAGE_URI REGISTRY DATASET_DIFF_QUEUE_URL
 python - "$PARAMETERS_FILE" <<'PY'
 import json
 import os
@@ -91,10 +92,14 @@ bucket = os.environ["BUCKET"]
 master_secret = os.environ["MASTER_SECRET_ARN"]
 app_secret = os.environ["APP_SECRET_ARN"]
 log_group = os.environ["LOG_GROUP"]
+dataset_diff_queue_url = os.environ["DATASET_DIFF_QUEUE_URL"]
 
 environment = (
     f"-e AWS_REGION={region} -e DB_SECRET_ARN={app_secret} "
     f"-e DB_NAME=fnol -e EVIDENCE_BUCKET={bucket}"
+)
+workbench_environment = (
+    f"{environment} -e DATASET_DIFF_QUEUE_URL={dataset_diff_queue_url}"
 )
 migration_environment = (
     f"-e AWS_REGION={region} -e DB_SECRET_ARN={master_secret} "
@@ -119,7 +124,7 @@ commands = [
     "sleep 3",
     (
         f"docker run -d --name fnol-workbench --restart unless-stopped --network host "
-        f"{logging} --log-opt awslogs-stream=workbench {environment} "
+        f"{logging} --log-opt awslogs-stream=workbench {workbench_environment} "
         f"-e STORAGE_BACKEND=aws -e RUNTIME_API_URL=http://127.0.0.1:8767 {image}"
     ),
     "sleep 3",

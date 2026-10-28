@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .dataset_diff_poller import DatasetDiffPoller
 from .service import Workbench
 from .storage import PostgresStateStore, S3EvidenceStore, database_url_from_environment
 
@@ -84,6 +85,18 @@ def create_server(workbench, host="127.0.0.1", port=8080):
                         "message": "Request body must be a JSON object.",
                     })
             parts = path.strip("/").split("/")
+            if parts == ["api", "queue", "prepare"]:
+                try:
+                    result = workbench.prepare_queue(
+                        self.trace_id,
+                        body.get("case_ids"),
+                    )
+                except RuntimeError as error:
+                    return self._unavailable(error)
+                code = 409 if isinstance(result, dict) and result.get("error") else 200
+                if isinstance(result, dict) and result.get("status") == "completed_with_errors":
+                    code = 200
+                return self._json(code, result)
             if len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] in {"process", "review", "decision", "record"}:
                 case_id, action = parts[2], parts[3]
                 try:
@@ -168,6 +181,15 @@ def main():
         options["evidence_store"] = S3EvidenceStore(args.s3_bucket, args.s3_prefix)
     workbench = Workbench(args.api, args.data, args.state, **options)
     server = create_server(workbench, args.host, args.port)
+    poller = None
+    queue_url = os.getenv("DATASET_DIFF_QUEUE_URL", "").strip()
+    if queue_url:
+        poller = DatasetDiffPoller(
+            workbench,
+            queue_url,
+            evidence_prefix=args.s3_prefix,
+        )
+        poller.start()
     workbench.observability.event(
         "server_started", host=args.host, port=args.port, service="fnol-workbench"
     )
@@ -176,6 +198,8 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        if poller is not None:
+            poller.stop()
         server.server_close()
 
 

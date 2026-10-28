@@ -162,10 +162,48 @@ Resources:
       SubnetId: !Ref PrivateDbSubnetB
       RouteTableId: !Ref PrivateDbRouteTable
 
+  DatasetDiffDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-dataset-diff-dlq'
+      MessageRetentionPeriod: 1209600
+
+  DatasetDiffQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-dataset-diff'
+      VisibilityTimeout: 120
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DatasetDiffDeadLetterQueue.Arn
+        maxReceiveCount: 5
+
+  DatasetDiffQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref DatasetDiffQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowS3DatasetNotifications
+            Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt DatasetDiffQueue.Arn
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:s3:::${EvidenceBucket}'
+
   EvidenceBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
+    DependsOn:
+      - DatasetDiffQueuePolicy
     Properties:
       BucketEncryption:
         ServerSideEncryptionConfiguration:
@@ -178,6 +216,15 @@ Resources:
         RestrictPublicBuckets: true
       VersioningConfiguration:
         Status: Enabled
+      NotificationConfiguration:
+        QueueConfigurations:
+          - Event: s3:ObjectCreated:*
+            Queue: !GetAtt DatasetDiffQueue.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: dataset.json
       Tags:
         - Key: Project
           Value: !Ref ProjectName
@@ -350,6 +397,14 @@ Resources:
                   - logs:DescribeLogStreams
                   - logs:PutLogEvents
                 Resource: !Sub '${ApplicationLogGroup.Arn}:*'
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !GetAtt DatasetDiffQueue.Arn
+                  - !GetAtt DatasetDiffDeadLetterQueue.Arn
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -407,4 +462,10 @@ Outputs:
     Value: !Ref ApplicationLogGroup
   Region:
     Value: !Ref AWS::Region
+  DatasetDiffQueueUrl:
+    Value: !Ref DatasetDiffQueue
+  DatasetDiffQueueArn:
+    Value: !GetAtt DatasetDiffQueue.Arn
+  DatasetDiffDeadLetterQueueUrl:
+    Value: !Ref DatasetDiffDeadLetterQueue
 
