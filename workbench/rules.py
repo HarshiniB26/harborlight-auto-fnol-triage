@@ -169,11 +169,11 @@ def determine_route(
         manual_reasons.append(f"Conflicting {field} accounts require reconciliation.")
     if not policy_available:
         manual_reasons.append(
-            "The policy service is unavailable after 3 attempts. Its failure is not empty evidence."
+            "The policy service is unavailable. Its failure is not empty evidence."
         )
     if not claims_available:
         manual_reasons.append(
-            "The claims service is unavailable after 3 attempts. Its failure is not an empty claims history."
+            "The claims service is unavailable. Its failure is not an empty claims history."
         )
     if policy_issue:
         manual_reasons.append(policy_issue)
