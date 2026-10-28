@@ -4,7 +4,6 @@ import argparse
 import json
 from pathlib import Path
 
-
 EVENT_TEXT = {
     "server_started": lambda row: f"Workbench started on {row.get('host')}:{row.get('port')}",
     "processing_started": lambda row: "Draft preparation started",

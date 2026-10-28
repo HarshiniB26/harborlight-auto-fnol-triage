@@ -37,5 +37,11 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked --group dev
 
+      - name: Lint with Ruff
+        run: uv run --locked ruff check workbench tools tests
+
+      - name: Type check with mypy
+        run: uv run --locked mypy
+
       - name: Run tests with coverage
         run: uv run --locked python -m pytest --cov

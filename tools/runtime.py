@@ -213,13 +213,13 @@ def create_server(data_dir, state, host="127.0.0.1", port=8765):
                 with connect(state) as db:
                     audit(db, "forbidden_write_attempt", cid)
                 return self.reply(403, {"error": "read_only_mission"})
-            draft, rid = body.get("draft"), body.get("review_id")
+            draft, record_review_id = body.get("draft"), body.get("review_id")
             key = self.headers.get("Idempotency-Key", "")
-            if not isinstance(draft, dict) or not isinstance(rid, str) or not key or len(key) > 128:
+            if not isinstance(draft, dict) or not isinstance(record_review_id, str) or not key or len(key) > 128:
                 return self.reply(400, {"error": "draft_review_and_idempotency_key_required"})
             if draft.get("case_id") != cid:
                 return self.reply(400, {"error": "draft_case_mismatch"})
-            fingerprint = digest({"case_id": cid, "draft": draft, "review_id": rid})
+            fingerprint = digest({"case_id": cid, "draft": draft, "review_id": record_review_id})
             with connect(state) as db:
                 db.execute("BEGIN IMMEDIATE")
                 previous = db.execute("SELECT * FROM keys WHERE key=?", (key,)).fetchone()
@@ -229,9 +229,9 @@ def create_server(data_dir, state, host="127.0.0.1", port=8765):
                         return self.reply(409, {"error": "idempotency_conflict"})
                     audit(db, "write_replayed", cid)
                     return self.reply(200, json.loads(previous["response"]))
-                review = db.execute("SELECT * FROM reviews WHERE id=?", (rid,)).fetchone()
+                review = db.execute("SELECT * FROM reviews WHERE id=?", (record_review_id,)).fetchone()
                 if not review or review["case_id"] != cid or review["status"] != "approved" or review["hash"] != digest(draft):
-                    audit(db, "unapproved_write_attempt", cid, review_id=rid)
+                    audit(db, "unapproved_write_attempt", cid, review_id=record_review_id)
                     return self.reply(403, {"error": "approval_missing_or_draft_changed"})
                 # logical_key represents a single dispute/claim, across duplicate intake IDs.
                 logical = case_map[cid]["logical_key"]
@@ -239,10 +239,10 @@ def create_server(data_dir, state, host="127.0.0.1", port=8765):
                 if existing:
                     audit(db, "duplicate_prevented", cid, existing_record_id=logical)
                     return self.reply(409, {"error": "duplicate_case", "existing_record_id": logical})
-                response = {"record_id": logical, "case_id": cid, "status": "created", "review_id": rid}
-                db.execute("INSERT INTO records VALUES(?,?,?,?)", (logical, cid, canonical(draft), rid))
+                response = {"record_id": logical, "case_id": cid, "status": "created", "review_id": record_review_id}
+                db.execute("INSERT INTO records VALUES(?,?,?,?)", (logical, cid, canonical(draft), record_review_id))
                 db.execute("INSERT INTO keys VALUES(?,?,?)", (key, fingerprint, canonical(response)))
-                audit(db, "record_created", cid, record_id=logical, review_id=rid,
+                audit(db, "record_created", cid, record_id=logical, review_id=record_review_id,
                       draft_hash=digest(draft), reviewer=review["reviewer"])
             return self.reply(201, response)
 

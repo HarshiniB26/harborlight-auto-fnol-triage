@@ -5,7 +5,6 @@ import sqlite3
 import tempfile
 import threading
 import unittest
-
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.request import Request, urlopen

@@ -12,7 +12,12 @@ from .client import MockClient
 from .draft import build_draft
 from .observability import Observability
 from .reliability import ReliableCaller
-from .storage import QUEUE_META_KEY, JsonStateStore, LocalEvidenceStore, PostgresStateStore
+from .storage import (
+    QUEUE_META_KEY,
+    JsonStateStore,
+    LocalEvidenceStore,
+    PostgresStateStore,
+)
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 

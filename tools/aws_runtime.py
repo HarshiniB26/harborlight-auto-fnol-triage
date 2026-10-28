@@ -307,14 +307,14 @@ def create_server(
                 if not dataset.get("allow_write"):
                     audit(database, "forbidden_write_attempt", case_id)
                     return self.reply(403, {"error": "read_only_mission"})
-                draft, review_id = body.get("draft"), body.get("review_id")
+                draft, record_review_id = body.get("draft"), body.get("review_id")
                 key = self.headers.get("Idempotency-Key", "")
-                if not isinstance(draft, dict) or not isinstance(review_id, str) or not key or len(key) > 128:
+                if not isinstance(draft, dict) or not isinstance(record_review_id, str) or not key or len(key) > 128:
                     return self.reply(400, {"error": "draft_review_and_idempotency_key_required"})
                 if draft.get("case_id") != case_id:
                     return self.reply(400, {"error": "draft_case_mismatch"})
                 fingerprint = digest(
-                    {"case_id": case_id, "draft": draft, "review_id": review_id}
+                    {"case_id": case_id, "draft": draft, "review_id": record_review_id}
                 )
                 database.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (key,))
                 previous = database.execute(
@@ -329,7 +329,7 @@ def create_server(
                     return self.reply(200, previous["response"])
                 review = database.execute(
                     "SELECT * FROM fnol.reviews WHERE id=%s",
-                    (review_id,),
+                    (record_review_id,),
                 ).fetchone()
                 if (
                     not review
@@ -337,7 +337,7 @@ def create_server(
                     or review["status"] != "approved"
                     or review["draft_hash"] != digest(draft)
                 ):
-                    audit(database, "unapproved_write_attempt", case_id, review_id=review_id)
+                    audit(database, "unapproved_write_attempt", case_id, review_id=record_review_id)
                     return self.reply(403, {"error": "approval_missing_or_draft_changed"})
 
                 logical_key = case["logical_key"]
@@ -360,11 +360,11 @@ def create_server(
                     "record_id": logical_key,
                     "case_id": case_id,
                     "status": "created",
-                    "review_id": review_id,
+                    "review_id": record_review_id,
                 }
                 database.execute(
                     "INSERT INTO fnol.records(id, case_id, draft, review_id) VALUES (%s, %s, %s, %s)",
-                    (logical_key, case_id, Jsonb(draft), review_id),
+                    (logical_key, case_id, Jsonb(draft), record_review_id),
                 )
                 database.execute(
                     """
@@ -378,7 +378,7 @@ def create_server(
                     "record_created",
                     case_id,
                     record_id=logical_key,
-                    review_id=review_id,
+                    review_id=record_review_id,
                     draft_hash=digest(draft),
                     reviewer=review["reviewer"],
                 )

@@ -9,7 +9,6 @@ import json
 import re
 from datetime import datetime, timezone
 
-
 LABELS = {
     "policy number": "policy_number",
     "incident timestamp": "incident_timestamp",
@@ -95,7 +94,7 @@ def extract_assertions(documents):
 def reconcile(assertions):
     """Resolve agreeing assertions and preserve every source in a conflict."""
 
-    resolved = {}
+    resolved: dict[str, object] = {}
     conflicts = []
     for field in sorted({item["field"] for item in assertions}):
         present = [

@@ -31,6 +31,7 @@ class CircuitBreaker:
                 raise CircuitOpenError("dependency recovery probe is already running")
             if self.state != "open":
                 return
+            assert self.opened_at is not None
             if self.clock() - self.opened_at >= self.reset_timeout:
                 self.state = "half_open"
                 return

@@ -172,7 +172,7 @@ def main():
     parser.add_argument("--s3-bucket", default=os.getenv("EVIDENCE_BUCKET"))
     parser.add_argument("--s3-prefix", default=os.getenv("EVIDENCE_PREFIX", ""))
     args = parser.parse_args()
-    options = {}
+    options: dict[str, object] = {}
     if args.storage == "aws":
         database_url = args.database_url or database_url_from_environment()
         options["state_store"] = PostgresStateStore(database_url)

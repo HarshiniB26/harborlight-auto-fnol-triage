@@ -64,7 +64,7 @@ docs/                supplied requirements and hardening documentation
 Requires Python 3.12 and `uv`.
 
 ```sh
-uv sync --locked
+uv sync --locked --group dev
 uv run --locked python tools/validate_package.py
 mkdir -p reports submissions
 ```
@@ -105,7 +105,9 @@ same command shape with `reject` instead of `approve`.
 ## Verify
 
 ```sh
-uv run --locked python -m unittest discover -s tests -v
+uv run --locked ruff check workbench tools tests
+uv run --locked mypy
+uv run --locked python -m pytest --cov
 uv run --locked python tools/check_secrets.py
 uv run --locked python tools/hardening_demo.py
 ```
@@ -113,15 +115,10 @@ uv run --locked python tools/hardening_demo.py
 The tests process all 12 development cases and compare the drafts with
 `feedback/dev_gold.json` through the supplied evaluator.
 
-Run the optional coverage gate without changing the locked project dependencies:
-
-```sh
-uv run --with pytest --with pytest-cov python -m pytest tests/ \
-  --cov=workbench --cov-report=term-missing --cov-fail-under=98
-```
-
-The current suite contains 50 tests, including sequential intake, S3/SQS diff,
-human-review, duplicate, idempotency, guardrail, and deployment regressions.
+The current suite contains 89 tests, including sequential intake, S3/SQS diff,
+human-review, duplicate, idempotency, guardrail, and deployment regressions. The
+CI quality gate requires Ruff and mypy to pass and enforces 100% statement and
+branch coverage.
 
 After preparing all cases, export and evaluate the exact submission array:
 

@@ -45,7 +45,9 @@ class LocalRuntimeCoverageTests(unittest.TestCase):
         self.base = f"http://127.0.0.1:{self.server.server_port}"
 
     def tearDown(self):
-        self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=2)
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
         self.temporary.cleanup()
 
     def test_get_routes_fault_and_missing_states(self):
@@ -109,12 +111,15 @@ class LocalRuntimeCoverageTests(unittest.TestCase):
         self.assertEqual(call(self.base, "/v1/records", body_b, {"Idempotency-Key": "b"})[0], 409)
 
     def test_read_only_write(self):
-        self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=2)
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
         self.dataset["allow_write"] = False
         (self.data / "dataset.json").write_text(json.dumps(self.dataset))
         self.server = runtime.create_server(self.data, self.state, port=0)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start(); self.base = f"http://127.0.0.1:{self.server.server_port}"
+        self.thread.start()
+        self.base = f"http://127.0.0.1:{self.server.server_port}"
         body = {"case_id": "A", "draft": {"case_id": "A"}, "review_id": "R"}
         self.assertEqual(call(self.base, "/v1/records", body, {"Idempotency-Key": "k"})[0], 403)
 

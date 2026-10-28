@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from workbench import server as server_module
 from workbench import draft as draft_module
+from workbench import server as server_module
 from workbench.dataset_diff_poller import (
     DatasetDiffPoller,
     dataset_keys_from_sqs_body,

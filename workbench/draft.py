@@ -14,7 +14,6 @@ from .rules import (
     select_policy,
 )
 
-
 PROCEDURE_ID = "AUTO-TRIAGE-01"
 SAFE_SOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 DOCUMENT_CITATION_PRIORITY = (
@@ -104,13 +103,14 @@ def build_draft(case, documents, policy, claims, data_dir=None, *, policy_loader
     """Create one output-contract draft and its safe processing warnings."""
 
     if policy_loader is None:
-        policy_loader = lambda source_id: _load_policy(data_dir, source_id)
+        def policy_loader(source_id):
+            return _load_policy(data_dir, source_id)
 
     sources = dict(documents)
     assertions, suspicious_sources = extract_assertions(documents)
     warnings = []
     evidence_issues = []
-    citations = []
+    citations: list[dict[str, object]] = []
 
     if suspicious_sources:
         warnings.append("Instruction-like text in the evidence was ignored.")

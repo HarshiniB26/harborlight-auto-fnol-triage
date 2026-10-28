@@ -265,7 +265,9 @@ class AwsRuntimeCoverageTests(unittest.TestCase):
             base = f"http://127.0.0.1:{other.server_port}"
             self.assertEqual(request(base, "/v1/reviews", {"case_id": "A"})[0], 503)
         finally:
-            other.shutdown(); other.server_close(); thread.join(timeout=2)
+            other.shutdown()
+            other.server_close()
+            thread.join(timeout=2)
 
     def test_cli_commands_and_main_guard(self):
         self.database.reviews["R"] = {"id": "R", "case_id": "A", "draft_hash": "h", "status": "pending", "reviewer": None}

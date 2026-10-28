@@ -7,7 +7,6 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from urllib.error import HTTPError
 
 from tools import hardening_demo
 

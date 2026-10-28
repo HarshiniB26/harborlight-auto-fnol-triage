@@ -13,7 +13,6 @@ import threading
 from collections import defaultdict
 from datetime import datetime, timezone
 
-
 RESTRICTED_KEYS = {
     "authorization",
     "password",

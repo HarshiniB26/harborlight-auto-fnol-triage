@@ -1,12 +1,11 @@
 """Regression checks for commands executed inside the deployment container."""
 
-import unittest
 import re
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from tools.migrate_to_aws import _configure_application_role
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
