@@ -239,7 +239,7 @@ class ToolingTests(unittest.TestCase):
         connection.__enter__.return_value = connection
         connection.execute.return_value = Result(None)
         secrets = MagicMock()
-        secrets.get_secret_value.return_value = {"SecretString": '{"username":"app","password":"pw"}'}
+        secrets.get_secret_value.return_value = {"SecretString": '{"username":"fnol_app","password":"pw"}'}
         s3 = MagicMock()
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary)
