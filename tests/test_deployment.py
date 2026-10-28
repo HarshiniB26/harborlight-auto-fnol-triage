@@ -78,6 +78,30 @@ class DeploymentCommandTests(unittest.TestCase):
             ('ALTER ROLE "fnol_app" PASSWORD \'quoted\'\'password\'', None),
         )
 
+    def test_database_role_rejects_non_allowlisted_username(self):
+        class Connection:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, query, parameters=None):
+                self.calls.append((query, parameters))
+                raise AssertionError("execute must not run for a rejected username")
+
+        connection = Connection()
+        secrets = {
+            "username": "evil;drop",
+            "password": "irrelevant",
+        }
+        with patch("tools.migrate_to_aws.boto3.client") as client:
+            client.return_value.get_secret_value.return_value = {
+                "SecretString": __import__("json").dumps(secrets)
+            }
+            with self.assertRaises(ValueError) as raised:
+                _configure_application_role(connection, "secret-arn")
+
+        self.assertIn("fnol_app", str(raised.exception))
+        self.assertEqual(connection.calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

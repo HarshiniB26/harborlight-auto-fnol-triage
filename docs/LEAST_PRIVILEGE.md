@@ -29,6 +29,12 @@ receives account-administrator, IAM-administration, or unrestricted S3
 permissions. PostgreSQL uses a dedicated application role restricted to the
 FNOL schema. Human IAM access and the application role remain separate.
 
+The application database login is allowlisted to `fnol_app` only and receives
+`USAGE` on schema `fnol` plus `SELECT`/`INSERT`/`UPDATE`/`DELETE` on that
+schema's tables and sequences—no DDL and no cross-schema grants. Mutable SQL
+in the runtimes binds values with parameters; local mock reset uses static
+`DELETE` statements for a fixed table list rather than interpolating names.
+
 Credential verification:
 
 ```sh

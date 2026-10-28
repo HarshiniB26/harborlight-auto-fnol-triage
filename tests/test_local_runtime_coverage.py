@@ -131,6 +131,17 @@ class LocalRuntimeCoverageTests(unittest.TestCase):
         for argv in commands:
             with patch.object(sys, "argv", argv), redirect_stdout(io.StringIO()):
                 runtime.main()
+        with runtime.connect(self.state) as database:
+            for statement in runtime.RESET_TABLE_DELETES:
+                table = statement.removeprefix("DELETE FROM ")
+                self.assertEqual(
+                    database.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0],
+                    0,
+                    msg=f"{table} should be empty after reset",
+                )
+            self.assertTrue(
+                all(statement.startswith("DELETE FROM ") for statement in runtime.RESET_TABLE_DELETES)
+            )
         with patch.object(sys, "argv", ["runtime", "reject", "missing", "--reviewer", "N", "--state", str(self.state)]), self.assertRaises(SystemExit):
             runtime.main()
         fake_server = MagicMock()

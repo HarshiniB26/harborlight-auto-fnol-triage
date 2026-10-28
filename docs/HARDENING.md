@@ -59,6 +59,8 @@ stable idempotency key and the runtime stores the prior response.
   after a person explicitly reviews the pending draft in the private UI, enters
   their name, and approves or rejects that exact draft hash.
 - `python tools/check_secrets.py` scans for likely live credentials.
+- SQL values use bound parameters (`?` / `%s`); identifiers are static statements or an allowlisted role name (`fnol_app`), never concatenated from request input.
+- The Postgres application login is dedicated least-privilege DML on the `fnol` schema only.
 
 ## Observability
 

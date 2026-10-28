@@ -11,6 +11,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Static statements only — table names are not interpolated from input.
+RESET_TABLE_DELETES = (
+    "DELETE FROM reviews",
+    "DELETE FROM records",
+    "DELETE FROM keys",
+    "DELETE FROM calls",
+    "DELETE FROM audit",
+)
+
 
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -291,8 +300,8 @@ def main():
         elif a.command == "audit":
             print(json.dumps([dict(x) for x in db.execute("SELECT * FROM audit ORDER BY seq")], indent=2))
         else:  # reset is the only remaining argparse subcommand.
-            for table in ["reviews", "records", "keys", "calls", "audit"]:
-                db.execute(f"DELETE FROM {table}")
+            for statement in RESET_TABLE_DELETES:
+                db.execute(statement)
             print("Reset local mock state. Stop all clients before resetting.")
 
 

@@ -13,6 +13,9 @@ from workbench.storage import database_url_from_environment
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Matches CloudFormation application secret username; only this role gets DML grants.
+ALLOWED_APPLICATION_ROLES = frozenset({"fnol_app"})
+
 
 def _configure_application_role(connection, secret_arn):
     """Create/update the non-owner database login used by running containers."""
@@ -24,6 +27,11 @@ def _configure_application_role(connection, secret_arn):
         .get_secret_value(SecretId=secret_arn)["SecretString"]
     )
     username = secret["username"]
+    if username not in ALLOWED_APPLICATION_ROLES:
+        raise ValueError(
+            f"Application database username must be one of {sorted(ALLOWED_APPLICATION_ROLES)}; "
+            f"got {username!r}."
+        )
     exists = connection.execute(
         "SELECT 1 FROM pg_roles WHERE rolname=%s", (username,)
     ).fetchone()
