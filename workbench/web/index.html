@@ -3,21 +3,63 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Harborlight FNOL</title>
+  <title>Auto FNOL Copilot</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <aside>
-    <p class="brand">Harborlight</p>
-    <h1>FNOL queue</h1>
-    <p class="note">Case IDs only. The route appears after you prepare the draft.</p>
-    <button class="export" id="export-results">Export results.json</button>
-    <p class="note" id="export-message"></p>
-    <ul id="queue"></ul>
-  </aside>
-  <main id="case">
-    <p class="empty">Select a case.</p>
-  </main>
+  <header class="topbar">
+    <a class="logo" href="/" aria-label="Auto FNOL Copilot home">
+      <span class="shield" aria-hidden="true">A</span>
+      <span>AUTO FNOL <b>Copilot</b></span>
+    </a>
+    <label class="global-search">
+      <span class="sr-only">Search cases</span>
+      <span aria-hidden="true">⌕</span>
+      <input id="global-search" type="search" placeholder="Search by Case ID, Policy Number, Vehicle ID…" autocomplete="off">
+    </label>
+    <div class="handler" aria-label="Signed in handler">
+      <span class="avatar" aria-hidden="true">CH</span>
+      <span><strong>Claims Handler</strong><small>Human reviewer</small></span>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <nav class="sidebar" aria-label="Workbench sections">
+      <button class="nav-item active" data-view="all"><span aria-hidden="true">▣</span>My Work</button>
+      <button class="nav-item" data-view="pending"><span aria-hidden="true">◷</span>Pending Review <b id="pending-count">0</b></button>
+      <button class="nav-item" data-view="record_created"><span aria-hidden="true">✓</span>Created Records</button>
+      <button class="nav-item" data-view="reports"><span aria-hidden="true">▤</span>Reports</button>
+      <div class="system-card">
+        <span class="status-dot" aria-hidden="true"></span>
+        <div><strong>Automated intake</strong><small>SQS monitoring active</small></div>
+      </div>
+    </nav>
+
+    <section class="queue-pane" aria-labelledby="queue-heading">
+      <div class="queue-head">
+        <div><p class="eyebrow">Case queue</p><h1 id="queue-heading">All drafts <span id="case-count">0</span></h1></div>
+        <button class="icon-button" id="refresh-queue" aria-label="Refresh case queue">↻</button>
+      </div>
+      <label class="queue-search">
+        <span aria-hidden="true">⌕</span>
+        <input id="queue-search" type="search" placeholder="Search drafts…" autocomplete="off">
+      </label>
+      <p class="queue-state" id="queue-state" role="status"></p>
+      <ul id="queue" aria-label="FNOL drafts"></ul>
+      <div class="export-panel">
+        <button class="export" id="export-results">Export evaluation results</button>
+        <p id="export-message" role="status"></p>
+      </div>
+    </section>
+
+    <main id="case" tabindex="-1">
+      <section class="welcome">
+        <span class="welcome-icon" aria-hidden="true">▣</span>
+        <h2>Select a draft to review</h2>
+        <p>New cases are prepared sequentially in the background and appear here when ready for a human decision.</p>
+      </section>
+    </main>
+  </div>
   <script src="/static/app.js"></script>
 </body>
 </html>

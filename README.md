@@ -86,9 +86,11 @@ Open `http://127.0.0.1:8080`.
 
 ## Human review
 
-Click **Submit for review**. A human reads the exact draft and citations, enters
-their name, and clicks **Approve exact draft** or **Reject draft**. The decision
-is bound to the draft hash; processing never approves automatically.
+The initial queue job prepares all current cases sequentially and submits each
+exact draft to the pending-review queue. A handler opens a pending draft, reads
+its facts and citations, enters their name, and clicks **Approve draft** or
+**Reject**. The decision is bound to the draft hash; processing never approves
+automatically.
 
 The supplied operator CLI is still available as a local administrative fallback:
 
@@ -118,7 +120,8 @@ uv run --with pytest --with pytest-cov python -m pytest tests/ \
   --cov=workbench --cov-report=term-missing --cov-fail-under=98
 ```
 
-The current suite contains 38 tests and covers 99% of the `workbench` package.
+The current suite contains 50 tests, including sequential intake, S3/SQS diff,
+human-review, duplicate, idempotency, guardrail, and deployment regressions.
 
 After preparing all cases, export and evaluate the exact submission array:
 
@@ -161,17 +164,56 @@ Hardening evidence is documented in `docs/HARDENING.md`, least privilege in
 
 ## Deploy to AWS
 
-AWS mode keeps the application on a private EC2 instance. The unchanged
-`dataset.json`, documents, and policies stay in private S3; RDS PostgreSQL holds
-only mutable reviews, records, idempotency keys, counters, audit events, and
-generated workbench state. Container logs go to CloudWatch. Local file-backed
-mode remains available for development and testing.
+AWS mode runs one private ECS Fargate service containing the Workbench and
+internal runtime containers. The unchanged `dataset.json`, documents, and
+policies stay in private S3; S3 change events are buffered by SQS and processed
+sequentially. RDS PostgreSQL holds only mutable reviews, records, idempotency
+keys, counters, audit events, generated workbench state, and the handled-case
+checkpoint. Container logs go to CloudWatch. Local file-backed mode remains
+available for development and testing.
 
 ```sh
-aws sts get-caller-identity
-AWS_REGION=us-east-1 STACK_NAME=auto-fnol-pilot \
+aws sso login --profile auto-fnol-admin
+aws sts get-caller-identity --profile auto-fnol-admin
+AWS_PROFILE=auto-fnol-admin AWS_REGION=us-east-1 \
+STACK_NAME=auto-fnol-team1 PROJECT_NAME=auto-fnol-team1 \
   ./deployment/deploy.sh
 ```
+
+### Teammate access through Coforge SSO
+
+The application is private, so every teammate uses their own Coforge AWS SSO
+identity and opens an independent encrypted tunnel to the shared Fargate
+service. Never copy another teammate's temporary credentials or SSO cache.
+
+Configure the AWS CLI once with `aws configure sso` and use:
+
+```text
+SSO start URL: https://identitycenter.amazonaws.com/ssoins-7223ae9684bca5e9
+SSO region: us-east-1
+AWS account: 104005345381
+Role: AWSAdministratorAccess
+Default region: us-east-1
+Output format: json
+Profile name: auto-fnol-admin
+```
+
+The local profile name is only a label and may be different. For each new SSO
+session, log in and start the tunnel with that profile:
+
+```sh
+aws sso login --profile auto-fnol-admin
+
+export AWS_PROFILE=auto-fnol-admin
+export AWS_REGION=us-east-1
+export STACK_NAME=auto-fnol-team1
+
+./deployment/start-tunnel.sh
+```
+
+Keep the tunnel terminal open and visit `http://127.0.0.1:18080`. Multiple
+handlers can each run their own local tunnel to the same deployed application
+and PostgreSQL state. Press `Ctrl+C` in the tunnel terminal when finished.
 
 The deployment is defined as code in `deployment/cloudformation.yaml`; the
 database schema is in `deployment/schema.sql`. Complete deployment, access,

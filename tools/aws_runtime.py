@@ -59,12 +59,12 @@ class S3DatasetStore:
         self._dataset = None
         self._lock = threading.Lock()
 
-    def get(self):
+    def get(self, *, force=False):
         """Return a validated dataset, refreshing it when the cache expires."""
 
         with self._lock:
             now = time.monotonic()
-            if self._dataset is not None and now - self._loaded_at < self.cache_seconds:
+            if not force and self._dataset is not None and now - self._loaded_at < self.cache_seconds:
                 return self._dataset
             response = self.client.get_object(Bucket=self.bucket, Key=self.key)
             dataset = json.loads(response["Body"].read())
@@ -159,9 +159,11 @@ def create_server(
             )
 
         def do_GET(self):
-            path = urlsplit(self.path).path
+            request_url = urlsplit(self.path)
+            path = request_url.path
+            force_refresh = request_url.query == "refresh=1"
             try:
-                dataset = datasets.get()
+                dataset = datasets.get(force=force_refresh)
             except Exception:
                 return self.reply(503, {"status": "not_ready", "error": "dataset_unavailable"})
             case_map = {case["case_id"]: case for case in dataset["cases"]}

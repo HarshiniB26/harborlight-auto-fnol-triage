@@ -3,7 +3,7 @@ services:
   runtime:
     build: .
     image: auto-fnol-participant
-    command: ["python", "tools/runtime.py", "serve", "--port", "8767"]
+    command: ["python", "-m", "tools.runtime", "serve", "--host", "0.0.0.0", "--port", "8767"]
     volumes:
       - runtime-state:/app/.state
     healthcheck:

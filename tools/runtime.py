@@ -205,6 +205,7 @@ def main():
     serve = sub.add_parser("serve")
     serve.add_argument("--data", type=Path, default=ROOT / "data" / "dev")
     serve.add_argument("--state", type=Path, default=ROOT / ".state" / "mock.sqlite")
+    serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
     for name in ["pending", "approve", "reject", "audit", "reset"]:
         sp = sub.add_parser(name)
@@ -216,8 +217,8 @@ def main():
             sp.add_argument("--confirm", action="store_true", required=True)
     a = p.parse_args()
     if a.command == "serve":
-        server = create_server(a.data, a.state, port=a.port)
-        print(f"Fictional training mock at http://127.0.0.1:{a.port}; Ctrl-C stops it.", flush=True)
+        server = create_server(a.data, a.state, host=a.host, port=a.port)
+        print(f"Fictional training mock at http://{a.host}:{a.port}; Ctrl-C stops it.", flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

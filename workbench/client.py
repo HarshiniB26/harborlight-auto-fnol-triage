@@ -50,10 +50,11 @@ class MockClient:
 
         return self._request("GET", "/health", trace_id=trace_id)
 
-    def list_cases(self, trace_id=None):
+    def list_cases(self, trace_id=None, refresh=False):
         """Return the case summaries exposed by ``GET /v1/cases``."""
 
-        status, payload = self._request("GET", "/v1/cases", trace_id=trace_id)
+        path = "/v1/cases?refresh=1" if refresh else "/v1/cases"
+        status, payload = self._request("GET", path, trace_id=trace_id)
         if status != 200 or not isinstance(payload, dict):
             raise RuntimeError("The case list is unavailable.")
         cases = payload.get("cases")

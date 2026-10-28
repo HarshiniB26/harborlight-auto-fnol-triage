@@ -21,11 +21,13 @@ The rules never make coverage, liability, fraud, reserve, settlement, denial,
 payment, or customer-commitment decisions. A repair discrepancy is only a
 referral indicator. A policy mismatch remains uncertain and goes to a person.
 
-For AWS, the EC2 task/instance role will be limited to reading the FNOL evidence
-bucket, retrieving the named database secret, and writing application telemetry.
-It will not receive account-administrator, IAM-administration, or unrestricted
-S3 permissions. PostgreSQL will use a dedicated application role restricted to
-the FNOL schema. Human sign-in and the application role remain separate.
+For AWS, the Fargate application task role is limited to reading the FNOL
+evidence bucket, retrieving the named application database secret, consuming
+the named dataset-event queue, and opening ECS Exec channels. The separate
+migration task can retrieve only the two named database secrets. Neither role
+receives account-administrator, IAM-administration, or unrestricted S3
+permissions. PostgreSQL uses a dedicated application role restricted to the
+FNOL schema. Human IAM access and the application role remain separate.
 
 Credential verification:
 

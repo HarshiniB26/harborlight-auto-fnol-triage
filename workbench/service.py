@@ -12,7 +12,7 @@ from .client import MockClient
 from .draft import build_draft
 from .observability import Observability
 from .reliability import ReliableCaller
-from .storage import JsonStateStore, LocalEvidenceStore
+from .storage import QUEUE_META_KEY, JsonStateStore, LocalEvidenceStore, PostgresStateStore
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 
@@ -63,12 +63,18 @@ class Workbench:
         monotonic=None,
         evidence_store=None,
         state_store=None,
+        queue_cursor=None,
     ):
         self.client = MockClient(api_url)
         self.data_dir = Path(data_dir)
         self.state_path = Path(state_path)
         self.evidence_store = evidence_store or LocalEvidenceStore(self.data_dir)
         self.state_store = state_store or JsonStateStore(self.state_path)
+        self.supports_queue_cursor = (
+            isinstance(self.state_store, PostgresStateStore)
+            if queue_cursor is None
+            else bool(queue_cursor)
+        )
         self._lock = threading.Lock()
         self.observability = observability or Observability()
         self.reliable_caller = reliable_caller or ReliableCaller(self.observability)
@@ -81,10 +87,15 @@ class Workbench:
         listed = []
         for case in self.client.list_cases():
             case_id = case["case_id"]
+            entry = state.get(case_id) or {}
+            draft = entry.get("draft") or {}
             listed.append({
                 "case_id": case_id,
                 "documents": case.get("documents") or [],
                 "status": self._status(case_id, state),
+                "classification": draft.get("classification"),
+                "routing": draft.get("routing"),
+                "processed_at": entry.get("processed_at"),
             })
         return listed
 
@@ -134,6 +145,133 @@ class Workbench:
             }
         return [state[case_id]["draft"] for case_id in requested]
 
+    def prepare_queue(self, trace_id=None, case_ids=None):
+        """Sequentially prepare cases and submit each resulting draft for review."""
+
+        trace_id = trace_id or "tr_" + uuid.uuid4().hex[:16]
+        if case_ids is None:
+            targets = [case["case_id"] for case in self.client.list_cases(trace_id)]
+        elif not isinstance(case_ids, list) or any(
+            not isinstance(case_id, str) for case_id in case_ids
+        ):
+            return {
+                "error": "invalid_case_ids",
+                "message": "case_ids must be an array of strings.",
+                "trace_id": trace_id,
+            }
+        else:
+            targets = list(dict.fromkeys(case_ids))
+
+        self.observability.event(
+            "queue_prepare_started", trace_id=trace_id, case_count=len(targets)
+        )
+        rows = []
+        handled = []
+        failed = []
+        for case_id in targets:
+            row = {"case_id": case_id}
+            try:
+                processed = self.process(case_id, trace_id)
+                row["process"] = processed
+                if processed.get("error") == "draft_locked":
+                    handled.append(case_id)
+                    self._merge_last_seen([case_id])
+                    rows.append(row)
+                    continue
+                if processed.get("error"):
+                    raise RuntimeError(processed.get("message") or processed["error"])
+                review = self.submit_review(case_id, trace_id)
+                row["review"] = review
+                if review.get("error"):
+                    raise RuntimeError(review.get("message") or review["error"])
+            except Exception as error:
+                failed.append(case_id)
+                row["error"] = "batch_case_failed"
+                row["message"] = str(error) or type(error).__name__
+                self.observability.event(
+                    "queue_case_failed",
+                    level="ERROR",
+                    trace_id=trace_id,
+                    case_id=case_id,
+                    error_type=type(error).__name__,
+                )
+            else:
+                handled.append(case_id)
+                # Checkpoint each success immediately. SQS redelivery then retries
+                # only cases that did not reach a durable pending/locked state.
+                self._merge_last_seen([case_id])
+            rows.append(row)
+
+        status = "completed" if not failed else "completed_with_errors"
+        self.observability.event(
+            "queue_prepare_completed",
+            trace_id=trace_id,
+            status=status,
+            case_count=len(targets),
+            handled_count=len(handled),
+            error_count=len(failed),
+        )
+        return {
+            "status": status,
+            "trace_id": trace_id,
+            "handled_case_ids": handled,
+            "failed_case_ids": failed,
+            "cases": rows,
+        }
+
+    def apply_dataset_diff(self, current_ids, trace_id=None):
+        """Process additions against the durable handled-ID cursor."""
+
+        trace_id = trace_id or "tr_" + uuid.uuid4().hex[:16]
+        if not self.supports_queue_cursor:
+            return {
+                "error": "cursor_unavailable",
+                "message": "Dataset diff requires durable queue cursor storage.",
+                "trace_id": trace_id,
+                "ack": False,
+            }
+        if not isinstance(current_ids, (list, tuple, set)) or any(
+            not isinstance(case_id, str) for case_id in current_ids
+        ):
+            return {
+                "error": "invalid_current_ids",
+                "message": "current_ids must contain only strings.",
+                "trace_id": trace_id,
+                "ack": False,
+            }
+
+        current = set(current_ids)
+        last_seen = self._read_last_seen()
+        added = sorted(current - last_seen)
+        removed = sorted(last_seen - current)
+        prepared = self.prepare_queue(trace_id=trace_id, case_ids=added) if added else {
+            "status": "completed",
+            "handled_case_ids": [],
+            "failed_case_ids": [],
+            "cases": [],
+        }
+        failed = prepared.get("failed_case_ids") or []
+        result = {
+            "status": prepared.get("status", "completed"),
+            "trace_id": trace_id,
+            "added_case_ids": added,
+            "removed_case_ids": removed,
+            "handled_case_ids": prepared.get("handled_case_ids") or [],
+            "failed_case_ids": failed,
+            "prepare": prepared,
+            "ack": not failed,
+        }
+        self.observability.event(
+            "dataset_diff_completed",
+            trace_id=trace_id,
+            added_count=len(added),
+            removed_count=len(removed),
+            handled_count=len(result["handled_case_ids"]),
+            failed_count=len(failed),
+            ack=result["ack"],
+        )
+        return result
+
     def process(self, case_id, trace_id=None):
         """Retrieve evidence and build a new deterministic draft for one case."""
 
@@ -149,8 +287,17 @@ class Workbench:
             with self._lock:
                 state = self._read()
                 entry = state.get(case_id) or {}
+                record = self._live_record(case_id, trace_id)
+                if record:
+                    return {
+                        "error": "draft_locked",
+                        "message": "A record already exists for this loss.",
+                        "draft": entry.get("draft"),
+                        "record": record,
+                        "trace_id": trace_id,
+                    }
                 review = self._live_review(entry, trace_id)
-                if review and review.get("status") in ("pending", "approved") and not self._live_record(case_id, trace_id):
+                if review and review.get("status") in ("pending", "approved"):
                     return {
                         "error": "draft_locked",
                         "message": "This draft is waiting on the current review.",
@@ -528,12 +675,34 @@ class Workbench:
         obsolete shape is ignored and disappears the next time state is saved.
         """
 
-        return self.state_store.read()
+        return {
+            case_id: entry
+            for case_id, entry in self.state_store.read().items()
+            if case_id != QUEUE_META_KEY
+        }
 
     def _write(self, state):
         """Atomically persist generated drafts, review IDs, and request keys."""
 
         self.state_store.write(state)
+
+    def _read_last_seen(self):
+        if not self.supports_queue_cursor:
+            return set()
+        entry = self.state_store.read().get(QUEUE_META_KEY) or {}
+        values = entry.get("last_seen_case_ids") or []
+        return {value for value in values if isinstance(value, str)}
+
+    def _merge_last_seen(self, case_ids):
+        if not self.supports_queue_cursor or not case_ids:
+            return
+        current = self._read_last_seen()
+        self.state_store.write({
+            QUEUE_META_KEY: {
+                "last_seen_case_ids": sorted(current | set(case_ids)),
+                "updated_at": utc_now(),
+            }
+        })
 
     @staticmethod
     def _check_id(value):

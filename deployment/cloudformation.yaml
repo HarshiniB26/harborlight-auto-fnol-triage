@@ -1,20 +1,22 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Private, cost-conscious AWS pilot for the Auto FNOL workbench.
+Description: Private US-region Auto FNOL pilot on ECS Fargate with durable sequential intake processing.
 
 Parameters:
   ProjectName:
     Type: String
     Default: auto-fnol
     AllowedPattern: '[a-z0-9-]+'
-  InstanceType:
-    Type: String
-    Default: t3.small
   DatabaseInstanceClass:
     Type: String
     Default: db.t4g.micro
-  LatestAmiId:
-    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+  ImageTag:
+    Type: String
+    Default: bootstrap
+    AllowedPattern: '[A-Za-z0-9_.-]+'
+  ServiceDesiredCount:
+    Type: Number
+    Default: 1
+    AllowedValues: [0, 1]
 
 Resources:
   Vpc:
@@ -23,16 +25,12 @@ Resources:
       CidrBlock: 10.44.0.0/16
       EnableDnsSupport: true
       EnableDnsHostnames: true
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-vpc'
+      Tags: [{Key: Name, Value: !Sub '${ProjectName}-vpc'}]
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-igw'
+      Tags: [{Key: Name, Value: !Sub '${ProjectName}-igw'}]
 
   InternetGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -47,9 +45,7 @@ Resources:
       AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: 10.44.0.0/24
       MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-public-a'
+      Tags: [{Key: Name, Value: !Sub '${ProjectName}-public-a'}]
 
   PrivateAppSubnetA:
     Type: AWS::EC2::Subnet
@@ -58,9 +54,7 @@ Resources:
       AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: 10.44.10.0/24
       MapPublicIpOnLaunch: false
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-app-private-a'
+      Tags: [{Key: Name, Value: !Sub '${ProjectName}-app-private-a'}]
 
   PrivateDbSubnetA:
     Type: AWS::EC2::Subnet
@@ -69,9 +63,7 @@ Resources:
       AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: 10.44.20.0/24
       MapPublicIpOnLaunch: false
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-db-private-a'
+      Tags: [{Key: Name, Value: !Sub '${ProjectName}-db-private-a'}]
 
   PrivateDbSubnetB:
     Type: AWS::EC2::Subnet
@@ -80,18 +72,13 @@ Resources:
       AvailabilityZone: !Select [1, !GetAZs '']
       CidrBlock: 10.44.21.0/24
       MapPublicIpOnLaunch: false
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-db-private-b'
+      Tags: [{Key: Name, Value: !Sub '${ProjectName}-db-private-b'}]
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref Vpc
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-public'
-
+      Tags: [{Key: Name, Value: !Sub '${ProjectName}-public'}]
   PublicDefaultRoute:
     Type: AWS::EC2::Route
     DependsOn: InternetGatewayAttachment
@@ -99,7 +86,6 @@ Resources:
       RouteTableId: !Ref PublicRouteTable
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
-
   PublicRouteAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
@@ -109,33 +95,25 @@ Resources:
   NatEip:
     Type: AWS::EC2::EIP
     DependsOn: InternetGatewayAttachment
-    Properties:
-      Domain: vpc
-
+    Properties: {Domain: vpc}
   NatGateway:
     Type: AWS::EC2::NatGateway
     Properties:
       AllocationId: !GetAtt NatEip.AllocationId
       SubnetId: !Ref PublicSubnetA
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-nat'
+      Tags: [{Key: Name, Value: !Sub '${ProjectName}-nat'}]
 
   PrivateAppRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref Vpc
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-app-private'
-
+      Tags: [{Key: Name, Value: !Sub '${ProjectName}-app-private'}]
   PrivateAppDefaultRoute:
     Type: AWS::EC2::Route
     Properties:
       RouteTableId: !Ref PrivateAppRouteTable
       DestinationCidrBlock: 0.0.0.0/0
       NatGatewayId: !Ref NatGateway
-
   PrivateAppRouteAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
@@ -146,41 +124,72 @@ Resources:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref Vpc
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-db-isolated'
-
+      Tags: [{Key: Name, Value: !Sub '${ProjectName}-db-isolated'}]
   PrivateDbRouteAssociationA:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PrivateDbSubnetA
-      RouteTableId: !Ref PrivateDbRouteTable
-
+    Properties: {SubnetId: !Ref PrivateDbSubnetA, RouteTableId: !Ref PrivateDbRouteTable}
   PrivateDbRouteAssociationB:
     Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PrivateDbSubnetB, RouteTableId: !Ref PrivateDbRouteTable}
+
+  DatasetDeadLetterQueue:
+    Type: AWS::SQS::Queue
     Properties:
-      SubnetId: !Ref PrivateDbSubnetB
-      RouteTableId: !Ref PrivateDbRouteTable
+      QueueName: !Sub '${ProjectName}-dataset-dlq'
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  DatasetQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-dataset-events'
+      ReceiveMessageWaitTimeSeconds: 20
+      VisibilityTimeout: 900
+      MessageRetentionPeriod: 345600
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DatasetDeadLetterQueue.Arn
+        maxReceiveCount: 5
+
+  DatasetQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref DatasetQueue]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowEvidenceBucketNotifications
+            Effect: Allow
+            Principal: {Service: s3.amazonaws.com}
+            Action: sqs:SendMessage
+            Resource: !GetAtt DatasetQueue.Arn
+            Condition:
+              StringEquals: {'aws:SourceAccount': !Ref 'AWS::AccountId'}
+              ArnLike: {'aws:SourceArn': !Sub 'arn:${AWS::Partition}:s3:*:*:${ProjectName}-*'}
 
   EvidenceBucket:
     Type: AWS::S3::Bucket
+    DependsOn: DatasetQueuePolicy
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
       BucketEncryption:
         ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
-      VersioningConfiguration:
-        Status: Enabled
-      Tags:
-        - Key: Project
-          Value: !Ref ProjectName
+      VersioningConfiguration: {Status: Enabled}
+      NotificationConfiguration:
+        QueueConfigurations:
+          - Event: s3:ObjectCreated:*
+            Queue: !GetAtt DatasetQueue.Arn
+            Filter:
+              S3Key:
+                Rules: [{Name: suffix, Value: dataset.json}]
+      Tags: [{Key: Project, Value: !Ref ProjectName}]
 
   EvidenceBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -193,12 +202,8 @@ Resources:
             Effect: Deny
             Principal: '*'
             Action: s3:*
-            Resource:
-              - !GetAtt EvidenceBucket.Arn
-              - !Sub '${EvidenceBucket.Arn}/*'
-            Condition:
-              Bool:
-                aws:SecureTransport: false
+            Resource: [!GetAtt EvidenceBucket.Arn, !Sub '${EvidenceBucket.Arn}/*']
+            Condition: {Bool: {'aws:SecureTransport': false}}
 
   S3GatewayEndpoint:
     Type: AWS::EC2::VPCEndpoint
@@ -206,8 +211,7 @@ Resources:
       VpcId: !Ref Vpc
       ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
       VpcEndpointType: Gateway
-      RouteTableIds:
-        - !Ref PrivateAppRouteTable
+      RouteTableIds: [!Ref PrivateAppRouteTable]
 
   ContainerRepository:
     Type: AWS::ECR::Repository
@@ -215,22 +219,19 @@ Resources:
     UpdateReplacePolicy: Retain
     Properties:
       RepositoryName: !Sub '${ProjectName}-app'
-      ImageScanningConfiguration:
-        ScanOnPush: true
+      ImageScanningConfiguration: {ScanOnPush: true}
       ImageTagMutability: IMMUTABLE
-      EncryptionConfiguration:
-        EncryptionType: AES256
+      EncryptionConfiguration: {EncryptionType: AES256}
 
   DatabaseSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
-      Description: !Sub '${ProjectName} PostgreSQL application credentials'
+      Description: !Sub '${ProjectName} PostgreSQL migration credentials'
       GenerateSecretString:
         SecretStringTemplate: '{"username":"fnol_admin"}'
         GenerateStringKey: password
         PasswordLength: 32
-        ExcludeCharacters: '"@/\\'
-
+        ExcludeCharacters: '"@/\'
   ApplicationDatabaseSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
@@ -239,37 +240,27 @@ Resources:
         SecretStringTemplate: '{"username":"fnol_app"}'
         GenerateStringKey: password
         PasswordLength: 32
-        ExcludeCharacters: '"@/\\'
+        ExcludeCharacters: '"@/\'
 
   DatabaseSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
       DBSubnetGroupDescription: Private FNOL database subnets
-      SubnetIds:
-        - !Ref PrivateDbSubnetA
-        - !Ref PrivateDbSubnetB
-
+      SubnetIds: [!Ref PrivateDbSubnetA, !Ref PrivateDbSubnetB]
   ApplicationSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: FNOL application; no inbound network access
+      GroupDescription: FNOL Fargate task with no inbound internet access
       VpcId: !Ref Vpc
       SecurityGroupIngress: []
-      SecurityGroupEgress:
-        - IpProtocol: '-1'
-          CidrIp: 0.0.0.0/0
-
+      SecurityGroupEgress: [{IpProtocol: '-1', CidrIp: 0.0.0.0/0}]
   DatabaseSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: PostgreSQL from FNOL application only
+      GroupDescription: PostgreSQL from the FNOL task only
       VpcId: !Ref Vpc
       SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 5432
-          ToPort: 5432
-          SourceSecurityGroupId: !Ref ApplicationSecurityGroup
-
+        - {IpProtocol: tcp, FromPort: 5432, ToPort: 5432, SourceSecurityGroupId: !Ref ApplicationSecurityGroup}
   Database:
     Type: AWS::RDS::DBInstance
     DeletionPolicy: Snapshot
@@ -285,27 +276,18 @@ Resources:
       MasterUsername: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:username}}'
       MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}'
       DBSubnetGroupName: !Ref DatabaseSubnetGroup
-      VPCSecurityGroups:
-        - !Ref DatabaseSecurityGroup
+      VPCSecurityGroups: [!Ref DatabaseSecurityGroup]
       PubliclyAccessible: false
       MultiAZ: false
       BackupRetentionPeriod: 7
       CopyTagsToSnapshot: true
       DeletionProtection: false
-
   SecretDatabaseAttachment:
     Type: AWS::SecretsManager::SecretTargetAttachment
-    Properties:
-      SecretId: !Ref DatabaseSecret
-      TargetId: !Ref Database
-      TargetType: AWS::RDS::DBInstance
-
+    Properties: {SecretId: !Ref DatabaseSecret, TargetId: !Ref Database, TargetType: 'AWS::RDS::DBInstance'}
   ApplicationSecretDatabaseAttachment:
     Type: AWS::SecretsManager::SecretTargetAttachment
-    Properties:
-      SecretId: !Ref ApplicationDatabaseSecret
-      TargetId: !Ref Database
-      TargetType: AWS::RDS::DBInstance
+    Properties: {SecretId: !Ref ApplicationDatabaseSecret, TargetId: !Ref Database, TargetType: 'AWS::RDS::DBInstance'}
 
   ApplicationLogGroup:
     Type: AWS::Logs::LogGroup
@@ -313,98 +295,263 @@ Resources:
       LogGroupName: !Sub '/${ProjectName}/application'
       RetentionInDays: 30
 
-  InstanceRole:
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${ProjectName}-cluster'
+      ClusterSettings: [{Name: containerInsights, Value: enabled}]
+      Configuration:
+        ExecuteCommandConfiguration: {Logging: DEFAULT}
+
+  TaskExecutionRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ec2.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        Statement: [{Effect: Allow, Principal: {Service: ecs-tasks.amazonaws.com}, Action: 'sts:AssumeRole'}]
+      ManagedPolicyArns: ['arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy']
+
+  ApplicationTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: [{Effect: Allow, Principal: {Service: ecs-tasks.amazonaws.com}, Action: 'sts:AssumeRole'}]
       Policies:
         - PolicyName: FnolApplicationAccess
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
+              - {Effect: Allow, Action: 's3:ListBucket', Resource: !GetAtt EvidenceBucket.Arn}
+              - {Effect: Allow, Action: 's3:GetObject', Resource: !Sub '${EvidenceBucket.Arn}/*'}
+              - {Effect: Allow, Action: 'secretsmanager:GetSecretValue', Resource: !Ref ApplicationDatabaseSecret}
               - Effect: Allow
-                Action:
-                  - s3:ListBucket
-                Resource: !GetAtt EvidenceBucket.Arn
+                Action: ['sqs:ReceiveMessage', 'sqs:DeleteMessage', 'sqs:ChangeMessageVisibility', 'sqs:GetQueueAttributes']
+                Resource: !GetAtt DatasetQueue.Arn
               - Effect: Allow
-                Action:
-                  - s3:GetObject
-                Resource: !Sub '${EvidenceBucket.Arn}/*'
-              - Effect: Allow
-                Action: secretsmanager:GetSecretValue
-                Resource:
-                  - !Ref DatabaseSecret
-                  - !Ref ApplicationDatabaseSecret
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogStream
-                  - logs:DescribeLogStreams
-                  - logs:PutLogEvents
-                Resource: !Sub '${ApplicationLogGroup.Arn}:*'
+                Action: ['ssmmessages:CreateControlChannel', 'ssmmessages:CreateDataChannel', 'ssmmessages:OpenControlChannel', 'ssmmessages:OpenDataChannel']
+                Resource: '*'
 
-  InstanceProfile:
-    Type: AWS::IAM::InstanceProfile
+  MigrationTaskRole:
+    Type: AWS::IAM::Role
     Properties:
-      Roles:
-        - !Ref InstanceRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: [{Effect: Allow, Principal: {Service: ecs-tasks.amazonaws.com}, Action: 'sts:AssumeRole'}]
+      Policies:
+        - PolicyName: FnolMigrationSecrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'secretsmanager:GetSecretValue'
+                Resource: [!Ref DatabaseSecret, !Ref ApplicationDatabaseSecret]
 
-  ApplicationInstance:
-    Type: AWS::EC2::Instance
-    DependsOn:
-      - PrivateAppDefaultRoute
-      - SecretDatabaseAttachment
-      - ApplicationSecretDatabaseAttachment
+  ApplicationTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    DependsOn: [SecretDatabaseAttachment, ApplicationSecretDatabaseAttachment]
     Properties:
-      ImageId: !Ref LatestAmiId
-      InstanceType: !Ref InstanceType
-      SubnetId: !Ref PrivateAppSubnetA
-      SecurityGroupIds:
-        - !Ref ApplicationSecurityGroup
-      IamInstanceProfile: !Ref InstanceProfile
-      MetadataOptions:
-        HttpTokens: required
-        HttpEndpoint: enabled
-      BlockDeviceMappings:
-        - DeviceName: /dev/xvda
-          Ebs:
-            VolumeType: gp3
-            VolumeSize: 12
-            Encrypted: true
-            DeleteOnTermination: true
-      UserData:
-        Fn::Base64: |
-          #!/bin/bash
-          set -euo pipefail
-          dnf install -y docker
-          systemctl enable --now docker
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-application'
+      Family: !Sub '${ProjectName}-application'
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '512'
+      Memory: '1024'
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ApplicationTaskRole.Arn
+      RuntimePlatform: {CpuArchitecture: ARM64, OperatingSystemFamily: LINUX}
+      ContainerDefinitions:
+        - Name: fnol-runtime
+          Image: !Sub '${ContainerRepository.RepositoryUri}:${ImageTag}'
+          Essential: true
+          Command: [python, -m, tools.aws_runtime, serve, --host, 127.0.0.1, --port, '8767']
+          Environment:
+            - {Name: AWS_REGION, Value: !Ref 'AWS::Region'}
+            - {Name: DB_SECRET_ARN, Value: !Ref ApplicationDatabaseSecret}
+            - {Name: DB_NAME, Value: fnol}
+            - {Name: EVIDENCE_BUCKET, Value: !Ref EvidenceBucket}
+            - {Name: ENABLE_SIMULATED_FAULTS, Value: 'true'}
+          HealthCheck:
+            Command: [CMD-SHELL, 'curl --fail http://127.0.0.1:8767/health || exit 1']
+            Interval: 20
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 30
+          LinuxParameters: {InitProcessEnabled: true}
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ApplicationLogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: runtime
+        - Name: fnol-workbench
+          Image: !Sub '${ContainerRepository.RepositoryUri}:${ImageTag}'
+          Essential: true
+          DependsOn: [{ContainerName: fnol-runtime, Condition: HEALTHY}]
+          Command: [python, -m, workbench.server, --host, 0.0.0.0, --port, '8080']
+          PortMappings: [{ContainerPort: 8080, Protocol: tcp, Name: workbench-http}]
+          Environment:
+            - {Name: AWS_REGION, Value: !Ref 'AWS::Region'}
+            - {Name: STORAGE_BACKEND, Value: aws}
+            - {Name: RUNTIME_API_URL, Value: 'http://127.0.0.1:8767'}
+            - {Name: DB_SECRET_ARN, Value: !Ref ApplicationDatabaseSecret}
+            - {Name: DB_NAME, Value: fnol}
+            - {Name: EVIDENCE_BUCKET, Value: !Ref EvidenceBucket}
+            - {Name: DATASET_DIFF_QUEUE_URL, Value: !Ref DatasetQueue}
+          HealthCheck:
+            Command: [CMD-SHELL, 'curl --fail http://127.0.0.1:8080/ready || exit 1']
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 40
+          LinuxParameters: {InitProcessEnabled: true}
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ApplicationLogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: workbench
+
+  MigrationTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    DependsOn: [SecretDatabaseAttachment, ApplicationSecretDatabaseAttachment]
+    Properties:
+      Family: !Sub '${ProjectName}-migration'
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt MigrationTaskRole.Arn
+      RuntimePlatform: {CpuArchitecture: ARM64, OperatingSystemFamily: LINUX}
+      ContainerDefinitions:
+        - Name: fnol-migration
+          Image: !Sub '${ContainerRepository.RepositoryUri}:${ImageTag}'
+          Essential: true
+          Command: [python, -m, tools.migrate_to_aws, --skip-s3]
+          Environment:
+            - {Name: AWS_REGION, Value: !Ref 'AWS::Region'}
+            - {Name: DB_SECRET_ARN, Value: !Ref DatabaseSecret}
+            - {Name: APP_DB_SECRET_ARN, Value: !Ref ApplicationDatabaseSecret}
+            - {Name: DB_NAME, Value: fnol}
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ApplicationLogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: migration
+
+  ApplicationService:
+    Type: AWS::ECS::Service
+    DependsOn: PrivateAppDefaultRoute
+    Properties:
+      ServiceName: !Sub '${ProjectName}-service'
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref ApplicationTaskDefinition
+      DesiredCount: !Ref ServiceDesiredCount
+      LaunchType: FARGATE
+      PlatformVersion: '1.4.0'
+      EnableExecuteCommand: true
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 100
+        DeploymentCircuitBreaker: {Enable: true, Rollback: true}
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups: [!Ref ApplicationSecurityGroup]
+          Subnets: [!Ref PrivateAppSubnetA]
+      Tags: [{Key: Project, Value: !Ref ProjectName}]
+
+  DatasetQueueAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Dataset event has not been handled within 15 minutes.
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions: [{Name: QueueName, Value: !GetAtt DatasetQueue.QueueName}]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 900
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+  DatasetDeadLetterAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: A dataset event exhausted its retry attempts.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{Name: QueueName, Value: !GetAtt DatasetDeadLetterQueue.QueueName}]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  ProcessingFailureMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApplicationLogGroup
+      FilterPattern: '{ $.event = "processing_failed" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub '${ProjectName}/Application'
+          MetricName: ProcessingFailures
+          MetricValue: '1'
+          DefaultValue: 0
+
+  ProcessingFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: A case failed before a usable review draft was created.
+      Namespace: !Sub '${ProjectName}/Application'
+      MetricName: ProcessingFailures
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  CircuitOpenMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApplicationLogGroup
+      FilterPattern: '{ $.event = "circuit_opened" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub '${ProjectName}/Application'
+          MetricName: CircuitOpened
+          MetricValue: '1'
+          DefaultValue: 0
+
+  CircuitOpenAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: A Policy or Claims dependency circuit breaker opened.
+      Namespace: !Sub '${ProjectName}/Application'
+      MetricName: CircuitOpened
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
 
 Outputs:
-  InstanceId:
-    Value: !Ref ApplicationInstance
-  EvidenceBucketName:
-    Value: !Ref EvidenceBucket
-  RepositoryUri:
-    Value: !GetAtt ContainerRepository.RepositoryUri
-  DatabaseSecretArn:
-    Value: !Ref DatabaseSecret
-  ApplicationDatabaseSecretArn:
-    Value: !Ref ApplicationDatabaseSecret
-  DatabaseEndpoint:
-    Value: !GetAtt Database.Endpoint.Address
-  LogGroupName:
-    Value: !Ref ApplicationLogGroup
-  Region:
-    Value: !Ref AWS::Region
-
+  EvidenceBucketName: {Value: !Ref EvidenceBucket}
+  RepositoryUri: {Value: !GetAtt ContainerRepository.RepositoryUri}
+  DatabaseSecretArn: {Value: !Ref DatabaseSecret}
+  ApplicationDatabaseSecretArn: {Value: !Ref ApplicationDatabaseSecret}
+  DatabaseEndpoint: {Value: !GetAtt Database.Endpoint.Address}
+  LogGroupName: {Value: !Ref ApplicationLogGroup}
+  ClusterName: {Value: !Ref EcsCluster}
+  ServiceName: {Value: !GetAtt ApplicationService.Name}
+  TaskDefinitionArn: {Value: !Ref ApplicationTaskDefinition}
+  MigrationTaskDefinitionArn: {Value: !Ref MigrationTaskDefinition}
+  PrivateAppSubnetId: {Value: !Ref PrivateAppSubnetA}
+  ApplicationSecurityGroupId: {Value: !Ref ApplicationSecurityGroup}
+  DatasetQueueUrl: {Value: !Ref DatasetQueue}
+  DatasetDeadLetterQueueUrl: {Value: !Ref DatasetDeadLetterQueue}
+  Region: {Value: !Ref 'AWS::Region'}

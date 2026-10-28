@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 SAFE_STORAGE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
+QUEUE_META_KEY = "fnol-queue-meta"
 
 
 def database_url_from_secret(secret_arn, database=None):

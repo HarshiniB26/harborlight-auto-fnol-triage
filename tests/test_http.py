@@ -42,11 +42,17 @@ class HttpTests(unittest.TestCase):
 
     def test_queue_lists_ids_and_case_page_prepares_a_draft(self):
         page = urlopen(self.base + "/", timeout=3).read().decode()
-        self.assertIn("FNOL queue", page)
-        self.assertIn("Export results.json", page)
+        self.assertIn("AUTO FNOL", page)
+        self.assertIn("Pending Review", page)
+        self.assertIn("Export evaluation results", page)
+        script = urlopen(self.base + "/static/app.js", timeout=3).read().decode()
+        self.assertIn("Approve draft", script)
+        self.assertIn("Create claim record", script)
+        self.assertNotIn("Prepare draft", script)
+        self.assertNotIn("Submit for review", script)
         cases = self._json("GET", "/api/cases")["cases"]
         self.assertIn("AUTO-D01", [item["case_id"] for item in cases])
-        self.assertNotIn("routing", cases[0])
+        self.assertIsNone(cases[0]["routing"])
         prepared = self._json("POST", "/api/cases/AUTO-D01/process")
         self.assertEqual(prepared["draft"]["routing"], "standard")
         self.assertEqual(prepared["draft"]["classification"], "collision")

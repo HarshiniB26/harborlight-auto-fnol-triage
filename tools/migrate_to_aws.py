@@ -30,8 +30,10 @@ def _configure_application_role(connection, secret_arn):
     if not exists:
         connection.execute(sql.SQL("CREATE ROLE {} LOGIN").format(sql.Identifier(username)))
     connection.execute(
-        sql.SQL("ALTER ROLE {} PASSWORD %s").format(sql.Identifier(username)),
-        (secret["password"],),
+        sql.SQL("ALTER ROLE {} PASSWORD {}").format(
+            sql.Identifier(username),
+            sql.Literal(secret["password"]),
+        )
     )
     role = sql.Identifier(username)
     connection.execute(sql.SQL("GRANT USAGE ON SCHEMA fnol TO {}").format(role))

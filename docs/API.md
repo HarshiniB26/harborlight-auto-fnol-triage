@@ -30,6 +30,10 @@ KYC is read-only: every record-creation attempt is forbidden, even if a review w
 A configured upstream timeout returns 503 `upstream_timeout` promptly rather than sleeping. This tests the team's error path; it does not test actual network timeout duration. Transient faults fail once; persistent faults fail on every request until reset. Use at most three total attempts, then escalate. Counter state survives service restart. Reset it between independent assessment runs.
 Unknown resources return 404. Invalid input returns 400 or 413. No batch processing, authentication, real payment, claim adjudication or customer approval endpoint exists.
 
+The separate Workbench API exposes `POST /api/queue/prepare` for an on-demand
+sequential preparation run. In AWS, S3/SQS invokes the same service workflow
+automatically; it does not add batch behavior to this mock enterprise API.
+
 ## Operator commands
 
 `pending`, `approve`, `reject`, `audit`, and `reset --confirm` accept `--state PATH`.
