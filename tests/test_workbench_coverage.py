@@ -389,7 +389,16 @@ class ServiceCoverageTests(unittest.TestCase):
         workbench = self.workbench({"A": {"draft": {"case_id": "A"}}})
         self.assertEqual(workbench._status("A", workbench._read()), "draft_ready")
         self.assertEqual(workbench._documents(["MISSING", "FOUND"]), {"FOUND": "document FOUND"})
-        self.assertEqual(workbench._activity({}, None, None), [])
+        self.assertEqual(workbench._activity({}, None, None, "A"), [])
+        self.assertEqual(
+            workbench._activity(
+                {"draft": {"case_id": "A"}, "review_id": "R"},
+                {"status": "approved", "reviewer": "Pat"},
+                {"record_id": "loss-1", "case_id": "B"},
+                "A",
+            )[-1]["label"],
+            "Duplicate intake resolved to existing record",
+        )
         self.assertEqual(workbench._read_last_seen(), set())
         workbench._merge_last_seen(["A"])
         workbench._merge_last_seen([])

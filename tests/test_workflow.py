@@ -137,6 +137,40 @@ class WorkflowTests(unittest.TestCase):
         with sqlite3.connect(self.mock_path) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM records").fetchone()[0], 1)
 
+        by_id = {row["case_id"]: row for row in self.workbench.list_cases()}
+        self.assertFalse(by_id["AUTO-D09"]["duplicate_intake"])
+        self.assertTrue(by_id["AUTO-D10"]["duplicate_intake"])
+        self.assertEqual(by_id["AUTO-D10"]["record_case_id"], "AUTO-D09")
+        self.assertEqual(by_id["AUTO-D10"]["record_id"], created["record"]["record_id"])
+
+        source_view = self.workbench.case_view("AUTO-D09")
+        duplicate_view = self.workbench.case_view("AUTO-D10")
+        self.assertFalse(source_view["duplicate_intake"])
+        self.assertTrue(duplicate_view["duplicate_intake"])
+        self.assertIn(
+            "Duplicate intake resolved to existing record",
+            [row["label"] for row in duplicate_view["activity"]],
+        )
+        self.assertEqual(
+            self.workbench._status("AUTO-D10", self.workbench._read()),
+            "record_created",
+        )
+        self.assertFalse(self.workbench._duplicate_intake("AUTO-D10", None))
+        self.assertFalse(self.workbench._duplicate_intake("", created["record"]))
+        self.assertFalse(self.workbench._duplicate_intake(None, created["record"]))
+        self.assertFalse(
+            self.workbench._duplicate_intake(
+                "AUTO-D10",
+                {"record_id": created["record"]["record_id"], "case_id": ""},
+            )
+        )
+        self.assertFalse(
+            self.workbench._duplicate_intake(
+                "AUTO-D10",
+                {"record_id": created["record"]["record_id"], "case_id": 12},
+            )
+        )
+
     def test_identical_record_request_replays_with_same_idempotency_key(self):
         """A transport retry returns the first response and creates no second row."""
 

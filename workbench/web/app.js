@@ -19,6 +19,15 @@ const labels = {
   approved: "Approved", rejected: "Rejected", record_created: "Record created",
 };
 
+function statusLabel(item) {
+  if (item.duplicate_intake) return "Duplicate intake";
+  return labels[item.status] || item.status;
+}
+
+function statusClass(item) {
+  return item.duplicate_intake ? "duplicate" : item.status;
+}
+
 const routeLabels = {
   standard: "Standard handling",
   urgent: "Urgent handling",
@@ -126,8 +135,8 @@ function renderQueue() {
         </span>
         <span class="case-card-bottom">
           <span>FNOL triage</span>
-          <span class="state ${esc(item.status)}">
-            ${esc(labels[item.status] || item.status)}
+          <span class="state ${esc(statusClass(item))}">
+            ${esc(statusLabel(item))}
           </span>
         </span>
       </button>
@@ -239,8 +248,8 @@ function renderCase(item) {
       </div>
       <div class="header-status">
         <span>Status</span>
-        <strong class="state ${esc(item.status)}">
-          ${esc(labels[item.status] || item.status)}
+        <strong class="state ${esc(statusClass(item))}">
+          ${esc(statusLabel(item))}
         </strong>
         <small>
           Prepared ${esc(formatTime((item.activity[0] || {}).at))}
@@ -450,7 +459,14 @@ function renderCase(item) {
             for handler follow-up.
           </span>` : ""}
 
-        ${item.status === "record_created" ? `
+        ${item.status === "record_created" && item.duplicate_intake ? `
+          <span class="decision-note duplicate">
+            Duplicate intake — resolved to record
+            ${esc((item.record || {}).record_id)}
+            (filed under ${esc((item.record || {}).case_id)})
+          </span>` : ""}
+
+        ${item.status === "record_created" && !item.duplicate_intake ? `
           <span class="decision-note created">
             Record ${esc((item.record || {}).record_id)} created
           </span>` : ""}

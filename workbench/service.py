@@ -94,10 +94,14 @@ class Workbench:
             case_id = case["case_id"]
             entry = state.get(case_id) or {}
             draft = entry.get("draft") or {}
+            record = self._live_record(case_id)
             listed.append({
                 "case_id": case_id,
                 "documents": case.get("documents") or [],
-                "status": self._status(case_id, state),
+                "status": self._status(case_id, state, record=record),
+                "duplicate_intake": self._duplicate_intake(case_id, record),
+                "record_id": (record or {}).get("record_id"),
+                "record_case_id": (record or {}).get("case_id"),
                 "classification": draft.get("classification"),
                 "routing": draft.get("routing"),
                 "processed_at": entry.get("processed_at"),
@@ -613,18 +617,20 @@ class Workbench:
         entry = state.get(case_id) or {}
         review = self._live_review(entry, trace_id)
         record = self._live_record(case_id, trace_id)
+        duplicate = self._duplicate_intake(case_id, record)
         return {
             "case_id": case_id,
             "documents": case.get("documents") or [],
-            "status": self._status(case_id, state),
+            "status": self._status(case_id, state, record=record),
+            "duplicate_intake": duplicate,
             "draft": entry.get("draft"),
             "warnings": entry.get("warnings") or [],
             "review": _public_review(review),
             "record": record,
-            "activity": self._activity(entry, review, record),
+            "activity": self._activity(entry, review, record, case_id=case_id),
         }
 
-    def _activity(self, entry, review, record):
+    def _activity(self, entry, review, record, case_id):
         """Build a concise handler timeline while retaining raw traces separately."""
 
         activity = []
@@ -649,10 +655,15 @@ class Workbench:
             })
         if record:
             activity.append({
-                "label": "Record created",
+                "label": (
+                    "Duplicate intake resolved to existing record"
+                    if self._duplicate_intake(case_id, record)
+                    else "Record created"
+                ),
                 "at": entry.get("recorded_at"),
                 "trace_id": entry.get("record_trace_id"),
                 "record_id": record.get("record_id"),
+                "record_case_id": record.get("case_id"),
             })
         return activity
 
@@ -708,10 +719,20 @@ class Workbench:
             "status": row.get("status") or "created",
         }
 
-    def _status(self, case_id, state):
+    def _duplicate_intake(self, case_id, record):
+        """True when a live record exists but was filed under a different intake ID."""
+
+        if not record or not isinstance(case_id, str) or not case_id:
+            return False
+        source = record.get("case_id")
+        return isinstance(source, str) and bool(source) and source != case_id
+
+    def _status(self, case_id, state, record=None):
         """Derive the handler-facing lifecycle status in precedence order."""
 
-        if self._live_record(case_id):
+        if record is None:
+            record = self._live_record(case_id)
+        if record:
             return "record_created"
         review = self._live_review(state.get(case_id) or {})
         if review:
