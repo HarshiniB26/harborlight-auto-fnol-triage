@@ -146,6 +146,14 @@ def create_server(workbench, host="127.0.0.1", port=8080):
         def _unavailable(self, error):
             """Return a predictable response when the supplied runtime is down."""
 
+            observability = getattr(workbench, "observability", None)
+            if observability is not None:
+                observability.event(
+                    "runtime_unavailable",
+                    level="ERROR",
+                    trace_id=self.trace_id,
+                    error_type=type(error).__name__,
+                )
             return self._json(503, {
                 "error": "runtime_unavailable",
                 "message": str(error),

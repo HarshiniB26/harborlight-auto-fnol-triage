@@ -46,6 +46,27 @@ class DeploymentCommandTests(unittest.TestCase):
         self.assertNotIn("AWS-StartPortForwardingSessionToRemoteHost", tunnel)
         self.assertNotIn('\\"host\\"', tunnel)
 
+    def test_cloudformation_defines_slo_and_availability_monitoring(self):
+        template = (ROOT / "deployment" / "cloudformation.yaml").read_text()
+
+        for resource in (
+            "ProcessingStartedMetric",
+            "ProcessingCompletedMetric",
+            "ProcessingWithinTargetMetric",
+            "ProcessingDurationMetric",
+            "RuntimeUnavailableMetric",
+            "CompletionRateAlarm",
+            "WithinTargetRateAlarm",
+            "RuntimeUnavailableAlarm",
+            "EcsTaskAvailabilityAlarm",
+        ):
+            self.assertIn(f"  {resource}:", template)
+
+        self.assertIn("MetricName: ProcessingWithin15Seconds", template)
+        self.assertIn("MetricName: ProcessingDuration", template)
+        self.assertIn("MetricName: RuntimeUnavailable", template)
+        self.assertIn("Threshold: 95", template)
+
     def test_database_role_password_is_safely_composed_for_postgres_ddl(self):
         class Result:
             def fetchone(self):

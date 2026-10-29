@@ -39,3 +39,27 @@ did not alter routing outside supplied rules, and did not invoke a write tool.
 Run the attack and human-boundary tests, the credential scan, and all 12 case
 evaluations. Restore filing only after the injection is ignored, logs are clean,
 and unapproved/changed drafts are blocked.
+
+# Runbook: operational alarms
+
+## Completion or latency SLO
+
+**Means:** Fewer than 95% of started case preparations completed successfully or
+within 15 seconds during the 15-minute evaluation window.
+**First check:** Search the application log group for `processing_failed`,
+`runtime_unavailable`, `tool_call_failed`, and `circuit_opened`, then correlate
+events using `trace_id`.
+
+## Runtime unavailable or ECS task deficit
+
+**Means:** The Workbench could not reach its Runtime container, or ECS has fewer
+running tasks than the service desires.
+**First check:** Open the ECS service events and stopped-task reason, then inspect
+the newest `runtime` and `workbench` CloudWatch streams.
+
+## Queue age or dead-letter queue
+
+**Means:** A dataset update has remained unhandled for 15 minutes or exhausted
+five receive attempts.
+**First check:** Inspect the SQS receive count and matching `dataset_diff_*`
+events. Confirm the S3 evidence exists before replaying an event.

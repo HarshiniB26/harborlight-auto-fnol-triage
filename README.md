@@ -115,7 +115,7 @@ uv run --locked python tools/hardening_demo.py
 The tests process all 12 development cases and compare the drafts with
 `feedback/dev_gold.json` through the supplied evaluator.
 
-The current suite contains 89 tests, including sequential intake, S3/SQS diff,
+The current suite contains 90 tests, including sequential intake, S3/SQS diff,
 human-review, duplicate, idempotency, guardrail, and deployment regressions. The
 CI quality gate requires Ruff and mypy to pass and enforces 100% statement and
 branch coverage.

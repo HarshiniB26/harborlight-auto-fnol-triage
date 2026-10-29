@@ -211,6 +211,16 @@ class ServerCoverageTests(unittest.TestCase):
         self.workbench.case_view = MagicMock(side_effect=RuntimeError("runtime"))
         self.assertEqual(self.request("GET", "/api/cases/X")[0], 503)
 
+        unavailable = [
+            detail
+            for name, detail in self.workbench.observability.rows
+            if name == "runtime_unavailable"
+        ]
+        self.assertEqual(len(unavailable), 3)
+        self.assertTrue(all(row["level"] == "ERROR" for row in unavailable))
+        self.assertTrue(all(row["error_type"] == "RuntimeError" for row in unavailable))
+        self.assertTrue(all(row["trace_id"].startswith("tr_") for row in unavailable))
+
     def test_post_validation_dispatch_and_error_paths(self):
         self.assertEqual(self.request("POST", "/api/queue/prepare", b"{}", {"Content-Length": "bad"})[0], 400)
         self.assertEqual(self.request("POST", "/api/queue/prepare", b"{}", {"Content-Length": "262145"})[0], 413)

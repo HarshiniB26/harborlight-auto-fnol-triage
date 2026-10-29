@@ -81,12 +81,14 @@ The `/metrics` endpoint exposes:
 - `fnol_duplicate_prevented_total`
 - completion rate, within-15-second rate, and p95 processing duration
 
-The production CloudWatch alert is: page a human when the completion rate or
-within-15-second rate remains below 95% for 15 consecutive minutes. Alert on
-this user-visible symptom, not on one slow request or an arbitrary CPU value.
+The AWS deployment derives durable CloudWatch metrics from the structured
+events. It alarms when the 15-minute completion rate or within-15-second rate
+falls below 95%, when the Runtime is unavailable, or when ECS has fewer running
+tasks than desired. Existing alarms also cover processing failures, open
+circuits, stale SQS messages, and DLQ messages.
 
 Local metrics and breaker state are process-local and reset on restart. The AWS
-deployment will publish metrics and logs to CloudWatch for durable aggregation.
+CloudWatch metrics and logs remain available across Fargate task replacements.
 
 ## Required demonstrations
 

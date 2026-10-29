@@ -104,6 +104,12 @@ task, RDS is not publicly accessible, S3 Block Public Access is enabled, the
 SQS queue is empty after intake, the DLQ is empty, and the CloudWatch log group
 contains `runtime`, `workbench`, and `migration` streams.
 
+The stack derives durable `ProcessingStarted`, `ProcessingCompleted`,
+`ProcessingWithin15Seconds`, `ProcessingDuration`, and `RuntimeUnavailable`
+metrics from the structured application logs. Eight CloudWatch alarms cover
+completion rate, the 15-second SLO, Runtime availability, ECS desired-versus-
+running tasks, processing failures, open circuits, queue age, and DLQ messages.
+
 ## Update and cleanup
 
 Rerun `deployment/deploy.sh` after code changes. It publishes a new immutable

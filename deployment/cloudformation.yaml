@@ -491,6 +491,61 @@ Resources:
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
 
+  ProcessingStartedMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApplicationLogGroup
+      FilterPattern: '{ $.event = "processing_started" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub '${ProjectName}/Application'
+          MetricName: ProcessingStarted
+          MetricValue: '1'
+          DefaultValue: 0
+
+  ProcessingCompletedMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApplicationLogGroup
+      FilterPattern: '{ $.event = "processing_completed" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub '${ProjectName}/Application'
+          MetricName: ProcessingCompleted
+          MetricValue: '1'
+          DefaultValue: 0
+
+  ProcessingWithinTargetMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApplicationLogGroup
+      FilterPattern: '{ $.event = "processing_completed" && $.duration_ms <= 15000 }'
+      MetricTransformations:
+        - MetricNamespace: !Sub '${ProjectName}/Application'
+          MetricName: ProcessingWithin15Seconds
+          MetricValue: '1'
+          DefaultValue: 0
+
+  ProcessingDurationMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApplicationLogGroup
+      FilterPattern: '{ $.event = "processing_completed" && $.duration_ms = * }'
+      MetricTransformations:
+        - MetricNamespace: !Sub '${ProjectName}/Application'
+          MetricName: ProcessingDuration
+          MetricValue: '$.duration_ms'
+          Unit: Milliseconds
+
+  RuntimeUnavailableMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApplicationLogGroup
+      FilterPattern: '{ $.event = "runtime_unavailable" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub '${ProjectName}/Application'
+          MetricName: RuntimeUnavailable
+          MetricValue: '1'
+          DefaultValue: 0
+
   ProcessingFailureMetric:
     Type: AWS::Logs::MetricFilter
     Properties:
@@ -538,6 +593,118 @@ Resources:
       Threshold: 0
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
+
+  CompletionRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Less than 95 percent of started case preparations completed in 15 minutes.
+      ComparisonOperator: LessThanThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 95
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: started
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: !Sub '${ProjectName}/Application'
+              MetricName: ProcessingStarted
+            Period: 900
+            Stat: Sum
+        - Id: completed
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: !Sub '${ProjectName}/Application'
+              MetricName: ProcessingCompleted
+            Period: 900
+            Stat: Sum
+        - Id: completionrate
+          Label: Processing completion rate
+          Expression: 'IF(started > 0, 100 * completed / started, 100)'
+          ReturnData: true
+
+  WithinTargetRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Less than 95 percent of started case preparations completed within 15 seconds.
+      ComparisonOperator: LessThanThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 95
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: started
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: !Sub '${ProjectName}/Application'
+              MetricName: ProcessingStarted
+            Period: 900
+            Stat: Sum
+        - Id: withintarget
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: !Sub '${ProjectName}/Application'
+              MetricName: ProcessingWithin15Seconds
+            Period: 900
+            Stat: Sum
+        - Id: withintargetrate
+          Label: Processing within 15 seconds rate
+          Expression: 'IF(started > 0, 100 * withintarget / started, 100)'
+          ReturnData: true
+
+  RuntimeUnavailableAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The Workbench could not reach the private Runtime API.
+      Namespace: !Sub '${ProjectName}/Application'
+      MetricName: RuntimeUnavailable
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  EcsTaskAvailabilityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The ECS service has fewer running tasks than desired tasks.
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 0
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: desired
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: ECS/ContainerInsights
+              MetricName: DesiredTaskCount
+              Dimensions:
+                - {Name: ClusterName, Value: !Ref EcsCluster}
+                - {Name: ServiceName, Value: !GetAtt ApplicationService.Name}
+            Period: 60
+            Stat: Average
+        - Id: running
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: ECS/ContainerInsights
+              MetricName: RunningTaskCount
+              Dimensions:
+                - {Name: ClusterName, Value: !Ref EcsCluster}
+                - {Name: ServiceName, Value: !GetAtt ApplicationService.Name}
+            Period: 60
+            Stat: Average
+        - Id: taskdeficit
+          Label: ECS task deficit
+          Expression: 'IF(desired > running, desired - running, 0)'
+          ReturnData: true
 
 Outputs:
   EvidenceBucketName: {Value: !Ref EvidenceBucket}
