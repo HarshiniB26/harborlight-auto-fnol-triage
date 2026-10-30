@@ -4,3 +4,5 @@ __pycache__/
 submissions/
 reports/
 *.sqlite
+.coverage
+htmlcov/

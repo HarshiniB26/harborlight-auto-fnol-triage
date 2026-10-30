@@ -116,16 +116,95 @@ def create_server(data_dir, state, host="127.0.0.1", port=8765):
             cid = body.get("case_id")
             if not isinstance(cid, str) or cid not in case_map:
                 return self.reply(400, {"error": "unknown_case"})
+            parts = self.path.strip("/").split("/")
+            if len(parts) == 4 and parts[:2] == ["v1", "reviews"] and parts[3] == "decision":
+                reviewer = body.get("reviewer")
+                decision = body.get("decision")
+                if (decision not in {"approved", "rejected"}
+                        or not isinstance(reviewer, str) or not reviewer.strip()
+                        or len(reviewer.strip()) > 80):
+                    return self.reply(400, {"error": "reviewer_and_decision_required"})
+                rid = parts[2]
+                with connect(state) as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    row = db.execute("SELECT * FROM reviews WHERE id=?", (rid,)).fetchone()
+                    if not row:
+                        return self.reply(404, {"error": "review_not_found"})
+                    if row["case_id"] != cid:
+                        return self.reply(409, {"error": "review_case_mismatch"})
+                    if row["status"] != "pending":
+                        return self.reply(409, {"error": "review_already_decided"})
+                    reviewer = reviewer.strip()
+                    db.execute(
+                        "UPDATE reviews SET status=?,reviewer=? WHERE id=?",
+                        (decision, reviewer, rid),
+                    )
+                    audit(db, "human_" + decision, cid, review_id=rid,
+                          reviewer=reviewer, draft_hash=row["hash"],
+                          channel="workbench_ui")
+                return self.reply(200, {"review_id": rid, "case_id": cid,
+                    "status": decision, "reviewer": reviewer,
+                    "draft_hash": row["hash"]})
             if self.path == "/v1/reviews":
                 draft = body.get("draft")
                 if not isinstance(draft, dict) or draft.get("case_id") != cid:
                     return self.reply(400, {"error": "draft_case_id_required"})
-                rid = "rev_" + uuid.uuid4().hex[:12]
+                draft_hash = digest(draft)
                 with connect(state) as db:
-                    db.execute("INSERT INTO reviews VALUES(?,?,?,?,?,?)",
-                               (rid, cid, canonical(draft), digest(draft), "pending", None))
-                    audit(db, "review_requested", cid, review_id=rid, draft_hash=digest(draft))
-                return self.reply(201, {"review_id": rid, "status": "pending", "draft_hash": digest(draft)})
+                    # Serialize review creation across HTTP threads.
+                    db.execute("BEGIN IMMEDIATE")
+
+                    previous = db.execute(
+                        "SELECT id, status FROM reviews "
+                        "WHERE case_id=? AND hash=? ORDER BY rowid LIMIT 1",
+                        (cid, draft_hash),
+                    ).fetchone()
+
+                    if previous:
+                        audit(
+                            db,
+                            "review_replayed",
+                            cid,
+                            review_id=previous["id"],
+                            draft_hash=draft_hash,
+                        )
+                        result = {
+                            "review_id": previous["id"],
+                            "status": previous["status"],
+                            "draft_hash": draft_hash,
+                        }
+                        code = 200
+                    else:
+                        rid = "rev_" + uuid.uuid4().hex[:12]
+
+                        db.execute(
+                            "INSERT INTO reviews VALUES(?,?,?,?,?,?)",
+                            (
+                                rid,
+                                cid,
+                                canonical(draft),
+                                draft_hash,
+                                "pending",
+                                None,
+                            ),
+                        )
+
+                        audit(
+                            db,
+                            "review_requested",
+                            cid,
+                            review_id=rid,
+                            draft_hash=draft_hash,
+                        )
+
+                        result = {
+                            "review_id": rid,
+                            "status": "pending",
+                            "draft_hash": draft_hash,
+                        }
+                        code = 201
+
+                return self.reply(code, result)
             if self.path != "/v1/records":
                 with connect(state) as db:
                     audit(db, "unsupported_write_attempt", cid, path=self.path)
@@ -134,13 +213,13 @@ def create_server(data_dir, state, host="127.0.0.1", port=8765):
                 with connect(state) as db:
                     audit(db, "forbidden_write_attempt", cid)
                 return self.reply(403, {"error": "read_only_mission"})
-            draft, rid = body.get("draft"), body.get("review_id")
+            draft, record_review_id = body.get("draft"), body.get("review_id")
             key = self.headers.get("Idempotency-Key", "")
-            if not isinstance(draft, dict) or not isinstance(rid, str) or not key or len(key) > 128:
+            if not isinstance(draft, dict) or not isinstance(record_review_id, str) or not key or len(key) > 128:
                 return self.reply(400, {"error": "draft_review_and_idempotency_key_required"})
             if draft.get("case_id") != cid:
                 return self.reply(400, {"error": "draft_case_mismatch"})
-            fingerprint = digest({"case_id": cid, "draft": draft, "review_id": rid})
+            fingerprint = digest({"case_id": cid, "draft": draft, "review_id": record_review_id})
             with connect(state) as db:
                 db.execute("BEGIN IMMEDIATE")
                 previous = db.execute("SELECT * FROM keys WHERE key=?", (key,)).fetchone()
@@ -150,9 +229,9 @@ def create_server(data_dir, state, host="127.0.0.1", port=8765):
                         return self.reply(409, {"error": "idempotency_conflict"})
                     audit(db, "write_replayed", cid)
                     return self.reply(200, json.loads(previous["response"]))
-                review = db.execute("SELECT * FROM reviews WHERE id=?", (rid,)).fetchone()
+                review = db.execute("SELECT * FROM reviews WHERE id=?", (record_review_id,)).fetchone()
                 if not review or review["case_id"] != cid or review["status"] != "approved" or review["hash"] != digest(draft):
-                    audit(db, "unapproved_write_attempt", cid, review_id=rid)
+                    audit(db, "unapproved_write_attempt", cid, review_id=record_review_id)
                     return self.reply(403, {"error": "approval_missing_or_draft_changed"})
                 # logical_key represents a single dispute/claim, across duplicate intake IDs.
                 logical = case_map[cid]["logical_key"]
@@ -160,10 +239,10 @@ def create_server(data_dir, state, host="127.0.0.1", port=8765):
                 if existing:
                     audit(db, "duplicate_prevented", cid, existing_record_id=logical)
                     return self.reply(409, {"error": "duplicate_case", "existing_record_id": logical})
-                response = {"record_id": logical, "case_id": cid, "status": "created", "review_id": rid}
-                db.execute("INSERT INTO records VALUES(?,?,?,?)", (logical, cid, canonical(draft), rid))
+                response = {"record_id": logical, "case_id": cid, "status": "created", "review_id": record_review_id}
+                db.execute("INSERT INTO records VALUES(?,?,?,?)", (logical, cid, canonical(draft), record_review_id))
                 db.execute("INSERT INTO keys VALUES(?,?,?)", (key, fingerprint, canonical(response)))
-                audit(db, "record_created", cid, record_id=logical, review_id=rid,
+                audit(db, "record_created", cid, record_id=logical, review_id=record_review_id,
                       draft_hash=digest(draft), reviewer=review["reviewer"])
             return self.reply(201, response)
 
@@ -176,6 +255,7 @@ def main():
     serve = sub.add_parser("serve")
     serve.add_argument("--data", type=Path, default=ROOT / "data" / "dev")
     serve.add_argument("--state", type=Path, default=ROOT / ".state" / "mock.sqlite")
+    serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
     for name in ["pending", "approve", "reject", "audit", "reset"]:
         sp = sub.add_parser(name)
@@ -187,8 +267,8 @@ def main():
             sp.add_argument("--confirm", action="store_true", required=True)
     a = p.parse_args()
     if a.command == "serve":
-        server = create_server(a.data, a.state, port=a.port)
-        print(f"Fictional training mock at http://127.0.0.1:{a.port}; Ctrl-C stops it.", flush=True)
+        server = create_server(a.data, a.state, host=a.host, port=a.port)
+        print(f"Fictional training mock at http://{a.host}:{a.port}; Ctrl-C stops it.", flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:
@@ -210,7 +290,7 @@ def main():
             print(json.dumps([dict(x) for x in db.execute("SELECT * FROM reviews WHERE status='pending'")], indent=2))
         elif a.command == "audit":
             print(json.dumps([dict(x) for x in db.execute("SELECT * FROM audit ORDER BY seq")], indent=2))
-        elif a.command == "reset":
+        else:  # reset is the only remaining argparse subcommand.
             for table in ["reviews", "records", "keys", "calls", "audit"]:
                 db.execute(f"DELETE FROM {table}")
             print("Reset local mock state. Stop all clients before resetting.")
